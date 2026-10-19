@@ -1,0 +1,522 @@
+#!/usr/bin/env node
+// pon-top: monitor tipo htop del estado PON del TP-Link XGB430v Pro (Digi)
+import { appendFileSync, writeFileSync } from 'node:fs';
+import { RouterClient, RouterError, normalizeBase } from './client.js';
+import { readPon, readDevInfo, dumpRaw } from './pon.js';
+import { Tracker, DEFAULT_THRESHOLDS } from './monitor.js';
+import { renderFrame, Screen } from './tui.js';
+import { promptLine, promptHidden, confirm } from './prompt.js';
+import { createDemoSource } from './demo.js';
+import { Recorder, isoLocal } from './log.js';
+import { Alerter } from './alerts.js';
+import { analyze, loadRecords, renderReport, defaultReportPaths } from './report.js';
+const VERSION = '0.2.1';
+const DEFAULT_USER = 'user';
+const HELP = `pon-top ${VERSION} — estado PON del TP-Link XGB430v Pro (Digi) en tiempo real
+
+Uso:
+  pon-top [opciones]               monitor interactivo
+  pon-top dump [opciones]          vuelca en JSON los datos en bruto y sale
+  pon-top report [rutas] [--out f] informe a partir de los registros (por defecto pon-logs/)
+
+Conexión:
+  --host <ip>            dirección del router (por defecto 192.168.1.1)
+  --user <nombre>        usuario (por defecto: ${DEFAULT_USER}; si no se indica se pregunta)
+  -i, --interval <s>     segundos entre lecturas (por defecto 5, mínimo 2)
+  --force                cerrar sin preguntar otra sesión abierta en el router
+  --relogin              reconectar solo si se pierde la sesión
+  --allow-public         permitir un host que no sea de red local
+
+Registro (activado por defecto):
+  --log-dir <carpeta>    un JSONL por día + eventos.log (por defecto pon-logs)
+  --log <fichero>        un único fichero JSONL, sin rotación
+  --no-log               no guardar nada
+
+Avisos (pitido + notificación del sistema por defecto):
+  --alert-rx <dBm>       avisar si RX baja de este valor (por defecto ${DEFAULT_THRESHOLDS.rxLow})
+  --alert-jump <dB>      avisar si RX cambia esto o más entre lecturas (por defecto ${DEFAULT_THRESHOLDS.rxJump})
+  --alert-temp <°C>      avisar si el transceptor supera esta temperatura (por defecto ${DEFAULT_THRESHOLDS.tempHigh})
+  --webhook <url>        enviar también cada aviso por POST (p. ej. https://ntfy.sh/mi-tema-secreto)
+  --cooldown <s>         no repetir el mismo tipo de aviso antes de N segundos (por defecto 60)
+  --no-notify            sin notificaciones del sistema
+  --no-bell              sin pitido
+
+Otros:
+  --json                 sin interfaz: una línea JSON por lectura en stdout
+  --demo                 datos simulados, sin router
+  --debug                traza del protocolo en pon-top-debug.log (sin secretos)
+  --out <fichero>        (report) guardar el informe en Markdown
+  -h, --help             esta ayuda
+
+La contraseña siempre se pide por teclado sin mostrarse; nunca se acepta por
+argumento ni variable de entorno y no se guarda en disco.`;
+function parseArgs(argv) {
+    const a = {
+        cmd: 'top', paths: [], host: process.env['PON_TOP_HOST'] || '192.168.1.1', user: null, interval: 5,
+        logDir: 'pon-logs', logFile: null, force: false, allowPublic: false, demo: false, json: false,
+        relogin: false, debug: false, help: false, bell: true, desktop: true, webhook: null, cooldown: 60,
+        th: { ...DEFAULT_THRESHOLDS }, out: null,
+    };
+    const need = (i, flag, allowNeg = false) => {
+        const v = argv[i + 1];
+        if (v === undefined || (v.startsWith('-') && !(allowNeg && /^-\d/.test(v))))
+            throw new Error(`Falta el valor de ${flag}`);
+        return v;
+    };
+    const numArg = (i, flag) => {
+        const n = Number(need(i, flag, true));
+        if (!Number.isFinite(n))
+            throw new Error(`Valor no numérico para ${flag}`);
+        return n;
+    };
+    for (let i = 0; i < argv.length; i++) {
+        const x = argv[i];
+        switch (x) {
+            case 'dump':
+            case 'report':
+            case 'top':
+                if (i === 0) {
+                    a.cmd = x;
+                    break;
+                }
+                a.paths.push(x);
+                break;
+            case '--host':
+                a.host = need(i, x);
+                i++;
+                break;
+            case '--user':
+                a.user = need(i, x);
+                i++;
+                break;
+            case '-i':
+            case '--interval':
+                a.interval = Math.max(2, numArg(i, x));
+                i++;
+                break;
+            case '--log-dir':
+                a.logDir = need(i, x);
+                a.logFile = null;
+                i++;
+                break;
+            case '--log':
+                a.logFile = need(i, x);
+                i++;
+                break;
+            case '--no-log':
+                a.logDir = null;
+                a.logFile = null;
+                break;
+            case '--json':
+                a.json = true;
+                break;
+            case '--force':
+                a.force = true;
+                break;
+            case '--relogin':
+                a.relogin = true;
+                break;
+            case '--demo':
+                a.demo = true;
+                break;
+            case '--debug':
+                a.debug = true;
+                break;
+            case '--allow-public':
+                a.allowPublic = true;
+                break;
+            case '--alert-rx':
+                a.th.rxLow = numArg(i, x);
+                i++;
+                break;
+            case '--alert-jump':
+                a.th.rxJump = Math.abs(numArg(i, x));
+                i++;
+                break;
+            case '--alert-temp':
+                a.th.tempHigh = numArg(i, x);
+                i++;
+                break;
+            case '--cooldown':
+                a.cooldown = Math.max(0, numArg(i, x));
+                i++;
+                break;
+            case '--webhook': {
+                const u = need(i, x);
+                i++;
+                let url;
+                try {
+                    url = new URL(u);
+                }
+                catch {
+                    throw new Error(`URL de webhook no válida: ${u}`);
+                }
+                if (url.protocol !== 'https:' && url.protocol !== 'http:')
+                    throw new Error('El webhook debe ser http(s)');
+                a.webhook = url.toString();
+                break;
+            }
+            case '--no-notify':
+                a.desktop = false;
+                break;
+            case '--no-bell':
+                a.bell = false;
+                break;
+            case '--out':
+                a.out = need(i, x);
+                i++;
+                break;
+            case '-h':
+            case '--help':
+                a.help = true;
+                break;
+            case '--password':
+            case '--pass':
+            case '-p':
+                throw new Error('Por seguridad la contraseña no se acepta como argumento: se pedirá por teclado');
+            default:
+                if (a.cmd === 'report' && !x.startsWith('-')) {
+                    a.paths.push(x);
+                    break;
+                }
+                throw new Error(`Opción desconocida: ${x}`);
+        }
+    }
+    return a;
+}
+export function isLocalHost(base) {
+    const h = new URL(base).hostname.replace(/^\[|\]$/g, '');
+    if (h === 'localhost' || h.endsWith('.local') || h.endsWith('.lan') || h.endsWith('.home.arpa'))
+        return true;
+    const m = h.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+    if (m) {
+        const [o1, o2] = [Number(m[1]), Number(m[2])];
+        return o1 === 10 || o1 === 127 || (o1 === 172 && o2 >= 16 && o2 <= 31) || (o1 === 192 && o2 === 168) || (o1 === 169 && o2 === 254);
+    }
+    return /^(fe80:|fc|fd|::1$)/i.test(h);
+}
+async function connect(a) {
+    const base = normalizeBase(a.host);
+    const debugLog = a.debug ? (m) => appendFileSync('pon-top-debug.log', `${new Date().toISOString()} ${m}\n`, { mode: 0o600 }) : undefined;
+    const client = new RouterClient({ host: base, debug: debugLog });
+    if (!process.stdin.isTTY)
+        throw new Error('Ejecuta pon-top en una terminal interactiva: necesita pedirte la contraseña');
+    console.log(`Router: ${base}`);
+    const user = a.user ?? ((await promptLine(`Usuario [${DEFAULT_USER}]: `)) || DEFAULT_USER);
+    let password = await promptHidden('Contraseña: ');
+    if (!password)
+        throw new Error('Contraseña vacía');
+    try {
+        const busy = await client.getBusy();
+        if (busy.isLogined && !a.force) {
+            console.log('Hay otra sesión de administración abierta en el router (p. ej. tu navegador).');
+            console.log('El router solo admite una: si continúas, esa sesión se cerrará.');
+            if (!(await confirm('¿Continuar? [s/N] ')))
+                throw new Error('Cancelado: no se ha iniciado sesión');
+        }
+    }
+    catch (e) {
+        if (e.message.startsWith('Cancelado'))
+            throw e;
+        // getBusy no es imprescindible
+    }
+    process.stdout.write('Iniciando sesión… ');
+    await client.login(user, password);
+    console.log('OK');
+    const devInfo = await readDevInfo(client);
+    const model = devInfo ? [devInfo['modelName'], devInfo['softwareVersion']].filter(Boolean).join(' · ') || null : null;
+    return {
+        model,
+        devInfo,
+        read: () => readPon(client),
+        relogin: async () => { await client.login(user, password); },
+        close: async () => { await client.logout(); password = ''; },
+        client,
+    };
+}
+function demoSource() {
+    const read = createDemoSource();
+    return { model: 'XGB430v Pro (demo)', devInfo: { modelName: 'XGB430v Pro (demo)' }, read, relogin: async () => { }, close: async () => { } };
+}
+function notifyDesc(a) {
+    const parts = [a.desktop ? 'escritorio' : null, a.bell ? 'pitido' : null, a.webhook ? 'webhook' : null].filter(Boolean);
+    return parts.length ? parts.join('+') : 'solo en pantalla';
+}
+/** Une registro, avisos y seguimiento para ambos modos (interfaz y JSON) */
+function wire(a, src, rec, bell, onAlert) {
+    const alerter = new Alerter({ bell: a.bell, desktop: a.desktop, webhook: a.webhook, cooldownSec: a.cooldown }, { bell });
+    const tr = new Tracker({
+        thresholds: a.th,
+        onEvent: e => {
+            rec.event(e);
+            if (alerter.handle(e))
+                onAlert(e);
+        },
+    });
+    rec.meta({
+        version: VERSION, host: normalizeBase(a.host), interval: a.interval, thresholds: a.th,
+        model: src.model, devInfo: src.devInfo, notify: notifyDesc(a),
+    });
+    rec.session('login', 'Sesión iniciada en el router');
+    return { tr, alerter };
+}
+async function runJson(src, a, rec) {
+    const { tr } = wire(a, src, rec, () => process.stderr.write('\x07'), e => process.stderr.write(`AVISO ${e.kind}: ${e.msg}\n`));
+    let stop = false;
+    const finish = () => { stop = true; };
+    process.once('SIGINT', finish);
+    process.once('SIGTERM', finish);
+    while (!stop) {
+        try {
+            const s = await src.read();
+            const ev = tr.push(s);
+            rec.sample(s);
+            const { raw: _raw, ...rest } = s;
+            const r = (v, d = 2) => (v === null ? null : +v.toFixed(d));
+            process.stdout.write(JSON.stringify({
+                ...rest, t: isoLocal(s.t), rx: r(s.rx), tx: r(s.tx), temp: r(s.temp), bias: r(s.bias), cpu: r(s.cpu, 0), mem: r(s.mem, 1),
+                ev: ev.map(e => `${e.kind}: ${e.msg}`),
+            }) + '\n');
+        }
+        catch (e) {
+            const msg = e.message;
+            rec.error(msg);
+            process.stderr.write(`error: ${msg}\n`);
+            if (e instanceof RouterError && e.code === 'SESSION') {
+                tr.emit('SESION', 'Sesión perdida');
+                if (!a.relogin)
+                    break;
+                try {
+                    await src.relogin();
+                    rec.session('relogin', 'Sesión restablecida');
+                }
+                catch { /* se reintenta */ }
+            }
+            else
+                tr.error(msg);
+        }
+        for (let i = 0; i < a.interval * 10 && !stop; i++)
+            await new Promise(r => setTimeout(r, 100));
+    }
+}
+async function runTop(src, a, rec) {
+    const out = process.stdout;
+    const screen = new Screen(out);
+    const view = {
+        host: new URL(normalizeBase(a.host)).host, model: src.model, intervalSec: a.interval, paused: false,
+        connected: true, busy: false, message: null, logPath: rec.path, startedAt: Date.now(),
+        color: !process.env['NO_COLOR'], alert: null, muted: false, rawView: false, notifyDesc: notifyDesc(a),
+    };
+    const { tr, alerter } = wire(a, src, rec, () => out.write('\x07'), e => { view.alert = e; });
+    let timer = null;
+    let clock = null;
+    let exiting = false;
+    const draw = () => { if (!exiting) {
+        view.logPath = rec.path;
+        screen.draw(renderFrame(tr, view, out.columns || 100, out.rows || 40));
+    } };
+    const schedule = (ms = view.intervalSec * 1000) => {
+        if (timer)
+            clearTimeout(timer);
+        timer = setTimeout(tick, ms);
+    };
+    async function tick() {
+        if (view.paused || !view.connected || view.busy) {
+            schedule();
+            return;
+        }
+        view.busy = true;
+        draw();
+        try {
+            const s = await src.read();
+            tr.push(s);
+            rec.sample(s);
+            view.message = null;
+        }
+        catch (e) {
+            const err = e;
+            rec.error(err.message);
+            if (err.code === 'SESSION') {
+                view.connected = false;
+                tr.emit('SESION', 'Sesión perdida (¿alguien ha entrado al router desde otro sitio?)');
+                view.message = a.relogin ? 'Reconectando…' : 'Sesión perdida: pulsa l para reconectar';
+                if (a.relogin)
+                    setTimeout(() => void reconnect(), 5000);
+            }
+            else {
+                tr.error(err.message);
+            }
+        }
+        finally {
+            view.busy = false;
+            draw();
+            schedule();
+        }
+    }
+    async function reconnect() {
+        view.message = 'Reconectando…';
+        draw();
+        try {
+            await src.relogin();
+            view.connected = true;
+            view.message = null;
+            rec.session('relogin', 'Sesión restablecida');
+            tr.emit('INFO', 'Sesión restablecida');
+            schedule(100);
+        }
+        catch (e) {
+            view.message = `No se pudo reconectar: ${e.message}`;
+            rec.session('relogin_fallido', view.message);
+            if (a.relogin)
+                setTimeout(() => void reconnect(), 60_000);
+        }
+        draw();
+    }
+    async function quit(code = 0) {
+        if (exiting)
+            process.exit(code);
+        exiting = true;
+        if (timer)
+            clearTimeout(timer);
+        if (clock)
+            clearInterval(clock);
+        try {
+            if (process.stdin.isTTY)
+                process.stdin.setRawMode(false);
+        }
+        catch { /* */ }
+        screen.leave();
+        process.stdout.write('Cerrando sesión en el router… ');
+        await Promise.race([src.close().catch(() => { }), new Promise(r => setTimeout(r, 3000))]);
+        rec.session('logout', 'Fin de la monitorización');
+        rec.close();
+        const st = tr.stats;
+        const av = tr.time.total ? ((tr.time.o5 / tr.time.total) * 100).toFixed(2) + '%' : '--';
+        console.log(`hecho.\nResumen: ${tr.samples.length} lecturas, disponibilidad ${av}, ${st.ponDrops} caídas PON, ${st.rxJumps} saltos de RX, ${st.reregs} posibles re-registros, ${st.reboots} reinicios, ${alerter.sent} avisos.`);
+        if (rec.enabled)
+            console.log(`Registro en ${rec.path} y ${rec.eventsPath}. Informe: pon-top report`);
+        process.exit(code);
+    }
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (k) => {
+        if (k === 'q' || k === 'Q' || k === '\u0003' || k === '\u001b')
+            void quit();
+        else if (k === 'p' || k === ' ') {
+            view.paused = !view.paused;
+            rec.session(view.paused ? 'pausa' : 'reanudar', view.paused ? 'Monitorización en pausa' : 'Monitorización reanudada');
+            draw();
+            if (!view.paused)
+                schedule(100);
+        }
+        else if (k === 'r')
+            schedule(0);
+        else if (k === '+') {
+            view.intervalSec = Math.min(300, view.intervalSec + 1);
+            draw();
+        }
+        else if (k === '-') {
+            view.intervalSec = Math.max(2, view.intervalSec - 1);
+            draw();
+        }
+        else if (k === 'v') {
+            view.rawView = !view.rawView;
+            draw();
+        }
+        else if (k === 'm') {
+            view.muted = alerter.muted = !alerter.muted;
+            draw();
+        }
+        else if (k === 'l' && !view.connected)
+            void reconnect();
+    });
+    process.on('SIGTERM', () => void quit());
+    process.on('SIGHUP', () => void quit());
+    out.on('resize', draw);
+    process.on('uncaughtException', e => { screen.leave(); console.error(e); void quit(1); });
+    screen.enter();
+    draw();
+    clock = setInterval(draw, 1000);
+    schedule(0);
+}
+function runReport(a) {
+    const paths = a.paths.length ? a.paths : defaultReportPaths();
+    if (!paths.length)
+        throw new Error('No encuentro registros: indica la carpeta o los ficheros pon-*.jsonl');
+    const md = renderReport(analyze(loadRecords(paths), a.th));
+    if (a.out) {
+        writeFileSync(a.out, md + '\n');
+        console.log(`Informe guardado en ${a.out}`);
+    }
+    else
+        console.log(md);
+}
+async function main() {
+    let a;
+    try {
+        a = parseArgs(process.argv.slice(2));
+    }
+    catch (e) {
+        console.error(e.message + '\n\n' + HELP);
+        process.exit(2);
+    }
+    if (a.help) {
+        console.log(HELP);
+        return;
+    }
+    if (a.cmd === 'report') {
+        try {
+            runReport(a);
+        }
+        catch (e) {
+            console.error(e.message);
+            process.exit(1);
+        }
+        return;
+    }
+    const base = normalizeBase(a.host);
+    if (!a.demo && !a.allowPublic && !isLocalHost(base)) {
+        console.error(`${base} no parece una dirección de tu red local. Usa --allow-public si es intencionado.`);
+        process.exit(2);
+    }
+    let src;
+    try {
+        src = a.demo ? demoSource() : await connect(a);
+    }
+    catch (e) {
+        const err = e;
+        console.error(`\n${err.message}`);
+        if (a.debug && err.detail)
+            console.error(JSON.stringify(err.detail).slice(0, 500));
+        process.exit(1);
+    }
+    if (a.cmd === 'dump') {
+        try {
+            if (!src.client)
+                throw new Error('dump no está disponible en modo demo');
+            console.log(JSON.stringify(await dumpRaw(src.client), null, 2));
+        }
+        finally {
+            await src.close();
+        }
+        return;
+    }
+    const rec = new Recorder({ dir: a.demo ? null : a.logDir, file: a.demo ? null : a.logFile });
+    if (a.json || !process.stdout.isTTY) {
+        try {
+            await runJson(src, a, rec);
+        }
+        finally {
+            rec.session('logout', 'Fin de la monitorización');
+            rec.close();
+            await src.close();
+        }
+        return;
+    }
+    await runTop(src, a, rec);
+}
+main().catch(e => {
+    console.error(e);
+    process.exit(1);
+});

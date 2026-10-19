@@ -1,0 +1,41 @@
+{
+  "name": "pon-top",
+  "version": "0.2.1",
+  "description": "Monitor tipo htop del estado PON/XGS-PON del router TP-Link XGB430v Pro (Digi), hablando directamente con su API cifrada",
+  "type": "module",
+  "bin": {
+    "pon-top": "dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "dev": "tsx src/main.ts",
+    "test": "tsx test/run.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/crypto-js": "^4.2.2",
+    "@types/node": "^26.6.5",
+    "crypto-js": "^4.2.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "author": "Raúl Martínez (https://github.com/i-rme)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/i-rme/pon-top.git"
+  },
+  "keywords": [
+    "xgs-pon",
+    "gpon",
+    "ont",
+    "tp-link",
+    "digi",
+    "fibra",
+    "monitor",
+    "htop"
+  ]
+}
