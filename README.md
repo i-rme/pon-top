@@ -43,7 +43,7 @@ con un **único archivo ejecutable** por sistema, que no necesita instalar nada:
 | Linux x64 | [`pon-top-linux-x64`](https://github.com/i-rme/pon-top/releases/latest/download/pon-top-linux-x64) |
 | Linux ARM64 (Raspberry Pi 4/5…) | [`pon-top-linux-arm64`](https://github.com/i-rme/pon-top/releases/latest/download/pon-top-linux-arm64) |
 | Windows x64 | [`pon-top-windows-x64.exe`](https://github.com/i-rme/pon-top/releases/latest/download/pon-top-windows-x64.exe) |
-| Cualquiera con Node.js 20+ o Bun | [`pon-top.mjs`](https://github.com/i-rme/pon-top/releases/latest/download/pon-top.mjs) (74 KB) |
+| Cualquiera con Node.js 22+ o Bun | [`pon-top.mjs`](https://github.com/i-rme/pon-top/releases/latest/download/pon-top.mjs) (74 KB) |
 
 En macOS o Linux, lo más cómodo es descargarlo desde la terminal:
 
@@ -65,7 +65,7 @@ Bun, `pon-top.mjs` hace lo mismo: `node pon-top.mjs`.
 
 ## Requisitos para ejecutarlo desde el código
 
-- Node.js 20 o superior, o Bun
+- Node.js 22 o superior, o Bun
 - Estar en la red local del router
 
 No tiene dependencias en tiempo de ejecución: la carpeta `dist/` ya viene compilada.
@@ -88,7 +88,7 @@ El usuario por defecto es `user`; pulsa Intro para usarlo o escribe otro.
 Teclas: `q` salir · `p` pausa · `r` leer ahora · `+`/`-` intervalo · `v` datos en bruto del
 router · `m` silenciar avisos · `l` volver a iniciar sesión.
 
-Funciona con Node.js 20+ y con Bun (`bun dist/main.js`).
+Funciona con Node.js 22+ y con Bun (`bun dist/main.js`).
 
 Además de la potencia y el estado, la pantalla muestra la **disponibilidad** (porcentaje del
 tiempo con la ONU registrada), el tiempo con RX bajo y en qué niveles de RX ha estado la línea.
@@ -218,7 +218,7 @@ npm run bundle     # release/pon-top.mjs (un solo archivo, requiere Bun para gen
 npm run compile    # release/pon-top: ejecutable para tu sistema (requiere Bun)
 ```
 
-El workflow `.github/workflows/ci.yml` pasa las pruebas con Node 20, 22 y Bun en cada push. En
+El workflow `.github/workflows/ci.yml` pasa las pruebas con Node 22, 24 y Bun en cada push. En
 cada commit a `main` compila además los ejecutables (los de Linux, Windows y macOS ARM se
 prueban en su propio sistema), calcula las sumas SHA-256 y publica la release
 `v<versión>-build.<n>`, que pasa a ser la última.

@@ -1,6 +1,6 @@
 name: CI y release
 
-# En cada push y pull request: compilar y pasar las pruebas (Node 20, 22 y Bun).
+# En cada push y pull request: compilar y pasar las pruebas (Node 22, 24 y Bun).
 # En cada commit a main, además: ejecutables de un solo archivo para cada sistema
 # y una release nueva con ellos.
 
@@ -25,10 +25,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node: [20, 22]
+        node: [22, 24]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -42,7 +42,7 @@ jobs:
     name: Pruebas (Bun)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
@@ -66,7 +66,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
@@ -83,7 +83,7 @@ jobs:
       - name: Prueba rápida
         if: matrix.smoke
         run: ./out/${{ matrix.asset }} --version
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
           path: out/${{ matrix.asset }}
@@ -97,7 +97,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
@@ -114,7 +114,7 @@ jobs:
             --define "__PON_TOP_BUILD__=\"${{ steps.v.outputs.build }}\"" \
             --outfile release/pon-top.mjs
           node release/pon-top.mjs --version
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: release
           merge-multiple: true
@@ -143,7 +143,7 @@ jobs:
             echo "| Linux x64 | \`pon-top-linux-x64\` |"
             echo "| Linux ARM64 (Raspberry Pi 4/5…) | \`pon-top-linux-arm64\` |"
             echo "| Windows x64 | \`pon-top-windows-x64.exe\` |"
-            echo "| Cualquiera con Node.js 20+ o Bun | \`pon-top.mjs\` |"
+            echo "| Cualquiera con Node.js 22+ o Bun | \`pon-top.mjs\` |"
             echo
             echo "En macOS y Linux, desde la terminal (descargado con \`curl\`, macOS no lo bloquea):"
             echo

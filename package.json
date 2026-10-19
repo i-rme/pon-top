@@ -15,7 +15,7 @@
     "compile": "bun build src/main.ts --compile --minify-syntax --outfile release/pon-top"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "license": "MIT",
   "devDependencies": {
