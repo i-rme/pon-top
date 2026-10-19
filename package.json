@@ -10,7 +10,9 @@
     "build": "tsc",
     "start": "node dist/main.js",
     "dev": "tsx src/main.ts",
-    "test": "tsx test/run.ts"
+    "test": "tsx test/run.ts",
+    "bundle": "bun build src/main.ts --target=node --format=esm --minify-syntax --outfile release/pon-top.mjs",
+    "compile": "bun build src/main.ts --compile --minify-syntax --outfile release/pon-top"
   },
   "engines": {
     "node": ">=20"

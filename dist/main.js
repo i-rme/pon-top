@@ -12,8 +12,10 @@ import { Alerter } from './alerts.js';
 import { analyze, loadRecords, renderReport, defaultReportPaths } from './report.js';
 import { SessionKeeper } from './session.js';
 const VERSION = '0.2.2';
+const BUILD = typeof __PON_TOP_BUILD__ === 'string' ? __PON_TOP_BUILD__ : null;
+const FULL_VERSION = BUILD ? `${VERSION} (${BUILD})` : VERSION;
 const DEFAULT_USER = 'user';
-const HELP = `pon-top ${VERSION} — estado PON del TP-Link XGB430v Pro (Digi) en tiempo real
+const HELP = `pon-top ${FULL_VERSION} — estado PON del TP-Link XGB430v Pro (Digi) en tiempo real
 
 Uso:
   pon-top [opciones]               monitor interactivo
@@ -47,6 +49,7 @@ Otros:
   --demo                 datos simulados, sin router
   --debug                traza del protocolo en pon-top-debug.log (sin secretos)
   --out <fichero>        (report) guardar el informe en Markdown
+  -V, --version          versión
   -h, --help             esta ayuda
 
 La contraseña siempre se pide por teclado sin mostrarse; nunca se acepta por
@@ -55,7 +58,7 @@ function parseArgs(argv) {
     const a = {
         cmd: 'top', paths: [], host: process.env['PON_TOP_HOST'] || '192.168.1.1', user: null, interval: 5,
         logDir: 'pon-logs', logFile: null, force: false, allowPublic: false, demo: false, json: false,
-        relogin: true, debug: false, help: false, bell: true, desktop: true, webhook: null, cooldown: 60,
+        relogin: true, debug: false, help: false, version: false, bell: true, desktop: true, webhook: null, cooldown: 60,
         th: { ...DEFAULT_THRESHOLDS }, out: null,
     };
     const need = (i, flag, allowNeg = false) => {
@@ -174,6 +177,10 @@ function parseArgs(argv) {
             case '--help':
                 a.help = true;
                 break;
+            case '-V':
+            case '--version':
+                a.version = true;
+                break;
             case '--password':
             case '--pass':
             case '-p':
@@ -264,7 +271,7 @@ function wire(a, src, rec, bell, onAlert) {
         },
     });
     rec.meta({
-        version: VERSION, host: normalizeBase(a.host), interval: a.interval, thresholds: a.th,
+        version: FULL_VERSION, host: normalizeBase(a.host), interval: a.interval, thresholds: a.th,
         model: src.model, devInfo: src.devInfo, notify: notifyDesc(a),
     });
     rec.session('login', 'Sesión iniciada en el router');
@@ -468,6 +475,10 @@ async function main() {
     }
     if (a.help) {
         console.log(HELP);
+        return;
+    }
+    if (a.version) {
+        console.log(`pon-top ${FULL_VERSION}`);
         return;
     }
     if (a.cmd === 'report') {

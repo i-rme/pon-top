@@ -4,3 +4,5 @@ pon-*.jsonl
 *.eventos.log
 pon-top-debug.log
 informe*.md
+release/
+out/

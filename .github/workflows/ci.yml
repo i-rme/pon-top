@@ -1,11 +1,27 @@
-name: CI
+name: CI y release
+
+# En cada push y pull request: compilar y pasar las pruebas (Node 20, 22 y Bun).
+# En cada commit a main, además: ejecutables de un solo archivo para cada sistema
+# y una release nueva con ellos.
 
 on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # en main no se cancela nada: cada commit tiene que acabar en su release
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  BUN_VERSION: 1.4.2
+
 jobs:
   test:
+    name: Pruebas (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -21,3 +37,130 @@ jobs:
       - run: npm test
       - name: dist/ está al día con src/
         run: git diff --exit-code -- dist
+
+  test-bun:
+    name: Pruebas (Bun)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: npm ci
+      - run: bun test/run.ts
+
+  build:
+    name: Ejecutable ${{ matrix.asset }}
+    needs: [test, test-bun]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest,    target: bun-linux-x64,    asset: pon-top-linux-x64,       smoke: true }
+          - { os: ubuntu-24.04-arm, target: bun-linux-arm64,  asset: pon-top-linux-arm64,     smoke: true }
+          - { os: windows-latest,   target: bun-windows-x64,  asset: pon-top-windows-x64.exe, smoke: true }
+          - { os: macos-latest,     target: bun-darwin-arm64, asset: pon-top-macos-arm64,     smoke: true }
+          - { os: macos-latest,     target: bun-darwin-x64,   asset: pon-top-macos-x64,       smoke: false }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Compilar
+        run: |
+          BUILD="build ${{ github.run_number }}, ${GITHUB_SHA::7}"
+          bun build src/main.ts --compile --minify-syntax \
+            --target=${{ matrix.target }} \
+            --define "__PON_TOP_BUILD__=\"$BUILD\"" \
+            --outfile "out/${{ matrix.asset }}"
+      - name: Firma ad-hoc (macOS no ejecuta binarios sin firmar)
+        if: runner.os == 'macOS'
+        run: codesign --force --sign - "out/${{ matrix.asset }}"
+      - name: Prueba rápida
+        if: matrix.smoke
+        run: ./out/${{ matrix.asset }} --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: out/${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 3
+
+  release:
+    name: Publicar release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Versión y etiqueta
+        id: v
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION-build.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "build=build ${{ github.run_number }}, ${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - name: Versión de un solo archivo para Node/Bun
+        run: |
+          bun build src/main.ts --target=node --format=esm --minify-syntax \
+            --define "__PON_TOP_BUILD__=\"${{ steps.v.outputs.build }}\"" \
+            --outfile release/pon-top.mjs
+          node release/pon-top.mjs --version
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: Sumas SHA-256
+        run: |
+          cd release
+          chmod +x pon-top-*
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Notas de la release
+        env:
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          {
+            # mensaje del commit, sin las líneas de coautoría
+            git log -1 --format=%B | grep -v -E '^(Co-Authored-By|Claude-Session):' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'
+            echo
+            echo "## Descarga"
+            echo
+            echo "Un solo archivo, sin instalar nada:"
+            echo
+            echo "| Sistema | Archivo |"
+            echo "|---|---|"
+            echo "| macOS (Apple Silicon: M1, M2…) | \`pon-top-macos-arm64\` |"
+            echo "| macOS (Intel) | \`pon-top-macos-x64\` |"
+            echo "| Linux x64 | \`pon-top-linux-x64\` |"
+            echo "| Linux ARM64 (Raspberry Pi 4/5…) | \`pon-top-linux-arm64\` |"
+            echo "| Windows x64 | \`pon-top-windows-x64.exe\` |"
+            echo "| Cualquiera con Node.js 20+ o Bun | \`pon-top.mjs\` |"
+            echo
+            echo "En macOS y Linux, desde la terminal (descargado con \`curl\`, macOS no lo bloquea):"
+            echo
+            echo '```bash'
+            echo "curl -L -o pon-top $REPO_URL/releases/latest/download/pon-top-macos-arm64"
+            echo "chmod +x pon-top && ./pon-top"
+            echo '```'
+            echo
+            echo "Commit: [\`${GITHUB_SHA::7}\`]($REPO_URL/commit/$GITHUB_SHA)"
+          } > notes.md
+          cat notes.md
+      - name: Crear release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.v.outputs.tag }}" release/* \
+            --target "$GITHUB_SHA" \
+            --title "pon-top ${{ steps.v.outputs.version }} (build ${{ github.run_number }})" \
+            --notes-file notes.md \
+            --latest

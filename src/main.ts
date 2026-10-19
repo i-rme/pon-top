@@ -13,6 +13,10 @@ import { analyze, loadRecords, renderReport, defaultReportPaths } from './report
 import { SessionKeeper, type SessionNote } from './session.js';
 
 const VERSION = '0.2.2';
+// La release inyecta aquí el número de build y el commit (bun build --define)
+declare const __PON_TOP_BUILD__: string | undefined;
+const BUILD = typeof __PON_TOP_BUILD__ === 'string' ? __PON_TOP_BUILD__ : null;
+const FULL_VERSION = BUILD ? `${VERSION} (${BUILD})` : VERSION;
 const DEFAULT_USER = 'user';
 
 interface Args {
@@ -30,6 +34,7 @@ interface Args {
   relogin: boolean;
   debug: boolean;
   help: boolean;
+  version: boolean;
   bell: boolean;
   desktop: boolean;
   webhook: string | null;
@@ -38,7 +43,7 @@ interface Args {
   out: string | null;
 }
 
-const HELP = `pon-top ${VERSION} — estado PON del TP-Link XGB430v Pro (Digi) en tiempo real
+const HELP = `pon-top ${FULL_VERSION} — estado PON del TP-Link XGB430v Pro (Digi) en tiempo real
 
 Uso:
   pon-top [opciones]               monitor interactivo
@@ -72,6 +77,7 @@ Otros:
   --demo                 datos simulados, sin router
   --debug                traza del protocolo en pon-top-debug.log (sin secretos)
   --out <fichero>        (report) guardar el informe en Markdown
+  -V, --version          versión
   -h, --help             esta ayuda
 
 La contraseña siempre se pide por teclado sin mostrarse; nunca se acepta por
@@ -81,7 +87,7 @@ function parseArgs(argv: string[]): Args {
   const a: Args = {
     cmd: 'top', paths: [], host: process.env['PON_TOP_HOST'] || '192.168.1.1', user: null, interval: 5,
     logDir: 'pon-logs', logFile: null, force: false, allowPublic: false, demo: false, json: false,
-    relogin: true, debug: false, help: false, bell: true, desktop: true, webhook: null, cooldown: 60,
+    relogin: true, debug: false, help: false, version: false, bell: true, desktop: true, webhook: null, cooldown: 60,
     th: { ...DEFAULT_THRESHOLDS }, out: null,
   };
   const need = (i: number, flag: string, allowNeg = false) => {
@@ -127,6 +133,7 @@ function parseArgs(argv: string[]): Args {
       case '--no-bell': a.bell = false; break;
       case '--out': a.out = need(i, x); i++; break;
       case '-h': case '--help': a.help = true; break;
+      case '-V': case '--version': a.version = true; break;
       case '--password': case '--pass': case '-p':
         throw new Error('Por seguridad la contraseña no se acepta como argumento: se pedirá por teclado');
       default:
@@ -228,7 +235,7 @@ function wire(a: Args, src: Source, rec: Recorder, bell: () => void, onAlert: (e
     },
   });
   rec.meta({
-    version: VERSION, host: normalizeBase(a.host), interval: a.interval, thresholds: a.th,
+    version: FULL_VERSION, host: normalizeBase(a.host), interval: a.interval, thresholds: a.th,
     model: src.model, devInfo: src.devInfo, notify: notifyDesc(a),
   });
   rec.session('login', 'Sesión iniciada en el router');
@@ -386,6 +393,7 @@ async function main(): Promise<void> {
     process.exit(2);
   }
   if (a.help) { console.log(HELP); return; }
+  if (a.version) { console.log(`pon-top ${FULL_VERSION}`); return; }
 
   if (a.cmd === 'report') {
     try { runReport(a); } catch (e) { console.error((e as Error).message); process.exit(1); }

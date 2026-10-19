@@ -31,14 +31,48 @@ y lo registra todo para poder sacar un informe.
   12:15:47  WAN_CAIDA          WAN: Connected → Disconnected
 ```
 
-## Requisitos
+## Descarga
 
-- Node.js 20 o superior (`node --version`)
+Cada commit a `main` publica una [release](https://github.com/i-rme/pon-top/releases/latest)
+con un **único archivo ejecutable** por sistema, que no necesita instalar nada:
+
+| Sistema | Archivo |
+|---|---|
+| macOS (Apple Silicon: M1, M2…) | [`pon-top-macos-arm64`](https://github.com/i-rme/pon-top/releases/latest/download/pon-top-macos-arm64) |
+| macOS (Intel) | [`pon-top-macos-x64`](https://github.com/i-rme/pon-top/releases/latest/download/pon-top-macos-x64) |
+| Linux x64 | [`pon-top-linux-x64`](https://github.com/i-rme/pon-top/releases/latest/download/pon-top-linux-x64) |
+| Linux ARM64 (Raspberry Pi 4/5…) | [`pon-top-linux-arm64`](https://github.com/i-rme/pon-top/releases/latest/download/pon-top-linux-arm64) |
+| Windows x64 | [`pon-top-windows-x64.exe`](https://github.com/i-rme/pon-top/releases/latest/download/pon-top-windows-x64.exe) |
+| Cualquiera con Node.js 20+ o Bun | [`pon-top.mjs`](https://github.com/i-rme/pon-top/releases/latest/download/pon-top.mjs) (74 KB) |
+
+En macOS o Linux, lo más cómodo es descargarlo desde la terminal:
+
+```bash
+curl -L -o pon-top https://github.com/i-rme/pon-top/releases/latest/download/pon-top-macos-arm64
+chmod +x pon-top
+./pon-top
+```
+
+- **macOS:** los ejecutables no están firmados por un desarrollador de Apple. Descargados con
+  `curl` funcionan directamente; si los bajas con el navegador, macOS los bloquea la primera vez.
+  En ese caso ejecuta `xattr -d com.apple.quarantine pon-top-macos-arm64`.
+- **Windows:** SmartScreen puede avisar la primera vez: «Más información → Ejecutar de todas formas».
+- Cada release incluye `SHA256SUMS.txt` para comprobar las descargas, y `pon-top --version`
+  muestra el número de build y el commit.
+
+Los ejecutables pesan unos 80 MB porque llevan dentro el runtime de Bun. Si ya tienes Node.js o
+Bun, `pon-top.mjs` hace lo mismo: `node pon-top.mjs`.
+
+## Requisitos para ejecutarlo desde el código
+
+- Node.js 20 o superior, o Bun
 - Estar en la red local del router
 
 No tiene dependencias en tiempo de ejecución: la carpeta `dist/` ya viene compilada.
 
 ## Uso
+
+Con el ejecutable descargado, sustituye `node dist/main.js` por `./pon-top`.
 
 ```bash
 node dist/main.js                 # monitor interactivo (pregunta usuario y contraseña)
@@ -180,4 +214,11 @@ npm install
 npm run build      # compila src/ a dist/
 npm test           # cifrado contra CryptoJS, eventos, avisos, registro, informe y flujo completo contra un router simulado
 npm run dev        # ejecutar desde el código TypeScript
+npm run bundle     # release/pon-top.mjs (un solo archivo, requiere Bun para generarlo)
+npm run compile    # release/pon-top: ejecutable para tu sistema (requiere Bun)
 ```
+
+El workflow `.github/workflows/ci.yml` pasa las pruebas con Node 20, 22 y Bun en cada push. En
+cada commit a `main` compila además los ejecutables (los de Linux, Windows y macOS ARM se
+prueban en su propio sistema), calcula las sumas SHA-256 y publica la release
+`v<versión>-build.<n>`, que pasa a ser la última.
