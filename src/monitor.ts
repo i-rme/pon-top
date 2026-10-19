@@ -10,6 +10,8 @@ export type EventKind =
   | 'REINICIO_ROUTER'
   | 'CONTADORES_A_CERO'
   | 'POSIBLE_REREGISTRO'
+  | 'RAFAGA_OMCI'
+  | 'WAN_RECONEXION'
   | 'WAN_CAIDA'
   | 'WAN_OK'
   | 'TEMP_ALTA'
@@ -24,7 +26,7 @@ export function severityOf(kind: EventKind): Severity {
   switch (kind) {
     case 'PON_CAIDA': case 'REINICIO_ROUTER': case 'WAN_CAIDA': case 'SESION': case 'SIN_DATOS':
       return 'alerta';
-    case 'SALTO_RX': case 'RX_BAJO': case 'POSIBLE_REREGISTRO': case 'CONTADORES_A_CERO': case 'TEMP_ALTA':
+    case 'SALTO_RX': case 'RX_BAJO': case 'POSIBLE_REREGISTRO': case 'CONTADORES_A_CERO': case 'TEMP_ALTA': case 'WAN_RECONEXION':
       return 'aviso';
     default:
       return 'info';
@@ -71,6 +73,8 @@ export interface Rates {
 const WRAP32 = 2 ** 32;
 /** Huecos mayores que esto entre lecturas no cuentan para los tiempos (monitor parado, pausa...) */
 export const MAX_CONTINUOUS_GAP_S = 60;
+/** Tras recuperar el registro, la OLT sigue configurando la ONU: sus ráfagas OMCI no cuentan aparte */
+const RECOVERY_GRACE_MS = 60_000;
 
 /** Delta de un contador de 32 bits que puede dar la vuelta */
 export function counterDelta(prev: number | null, cur: number | null): number | null {
@@ -86,7 +90,7 @@ export class Tracker {
   readonly maxSamples: number;
   readonly th: Thresholds;
   rates: Rates = { downBps: null, upBps: null, downPps: null, upPps: null, omciPerMin: null };
-  stats = { ponDrops: 0, rxJumps: 0, reboots: 0, reregs: 0, wanDrops: 0, errors: 0 };
+  stats = { ponDrops: 0, rxJumps: 0, reboots: 0, reregs: 0, wanDrops: 0, errors: 0, omciBursts: 0, wanReconnects: 0 };
   /** Tiempos acumulados (s) solo sobre tramos continuos */
   time = { total: 0, o5: 0, rxLow: 0, down: 0 };
   /** Tiempo (s) en cada nivel de RX (clave: dBm con 2 decimales) */
@@ -101,6 +105,8 @@ export class Tracker {
   private omciBase: { t: number; v: number } | null = null;
   /** Última RX válida (para detectar saltos que ocurren durante un corte) */
   private lastRx: number | null = null;
+  /** Hora de la última recuperación del registro (la OLT sigue configurando la ONU un rato después) */
+  private lastRecovery = -Infinity;
 
   constructor(opts: { maxSamples?: number; thresholds?: Partial<Thresholds>; onEvent?: (e: MonEvent) => void } = {}) {
     this.maxSamples = opts.maxSamples ?? 3000;
@@ -182,6 +188,7 @@ export class Tracker {
       } else if (prev.state !== 'O5' && s.state === 'O5') {
         const dur = this.dropStart ? ` tras ${fmtDur((s.t - this.dropStart) / 1000)}` : '';
         this.dropStart = null;
+        this.lastRecovery = s.t;
         add('PON_RECUPERADA', `Registrada de nuevo (O5)${dur}`);
       }
 
@@ -201,20 +208,43 @@ export class Tracker {
         this.omciBase = null;
       }
 
-      // Re-registro: ráfaga de OMCI muy por encima del ritmo normal
-      // (si el contador baja es que se ha reiniciado: no es una ráfaga)
+      // Reconexión del PPPoE entre dos lecturas: su uptime vuelve a empezar sin que lo hayamos visto caído
+      const sameWan = !!prev.wan && !!s.wan && prev.wan.name === s.wan.name;
+      const pu = prev.wan?.uptime ?? null, cu = s.wan?.uptime ?? null;
+      const wanBothUp = prev.wan?.status === 'Connected' && s.wan?.status === 'Connected';
+      const wanReconnected = !rebooted && sameWan && wanBothUp && pu !== null && cu !== null && cu < pu;
+      if (wanReconnected) {
+        this.stats.wanReconnects++;
+        add('WAN_RECONEXION', `${s.wan!.type} reconectado entre dos lecturas (llevaba ${fmtDur(pu!)}, ahora ${fmtDur(cu!)})`);
+      }
+
+      // Ráfaga de OMCI muy por encima del ritmo normal (si el contador baja es que se ha reiniciado)
+      const dOmciUp = prev.omciUp !== null && s.omciUp !== null && s.omciUp >= prev.omciUp ? s.omciUp - prev.omciUp : null;
       const dOmci = prev.omciDown !== null && s.omciDown !== null && s.omciDown >= prev.omciDown ? s.omciDown - prev.omciDown : null;
-      const partOfDrop = prev.state !== 'O5' || s.state !== 'O5'; // ya explicado por la caída/recuperación
+      // ya explicado por la caída/recuperación (incluido el primer minuto tras recuperarse)
+      const partOfDrop = prev.state !== 'O5' || s.state !== 'O5' || s.t - this.lastRecovery <= RECOVERY_GRACE_MS;
       if (!rebooted && !reset && !partOfDrop && dOmci !== null && dOmci > 5 + dt / 60) {
-        this.stats.reregs++;
-        add('POSIBLE_REREGISTRO', `OMCI +${dOmci} en ${fmtDur(dt)}`);
+        // Solo cuenta como re-registro si hay algún indicio de corte; si no, es la OLT consultando o
+        // configurando la ONU (p. ej. la recogida de estadísticas cada 15 minutos)
+        const why: string[] = [];
+        if (prev.onuId !== null && s.onuId !== null && prev.onuId !== s.onuId) why.push(`ONU ID ${prev.onuId} → ${s.onuId}`);
+        if (wanReconnected) why.push('el PPPoE se ha reconectado');
+        const counts = `OMCI +${dOmciUp ?? '?'}/+${dOmci} en ${fmtDur(dt)}`;
+        if (why.length) {
+          this.stats.reregs++;
+          add('POSIBLE_REREGISTRO', `${counts}; ${why.join(', ')}`);
+        } else {
+          this.stats.omciBursts++;
+          add('RAFAGA_OMCI', `${counts} sin corte (consulta de la OLT)`);
+        }
       }
 
       // WAN
+      // (solo cuentan las entradas y salidas de Connected; Disconnected → Connecting es la misma caída)
       const pw = prev.wan?.status, cw = s.wan?.status;
       if (pw && cw && pw !== cw) {
         if (cw === 'Connected') add('WAN_OK', `WAN conectada (${s.wan?.ip || 'sin IP'})`);
-        else { this.stats.wanDrops++; add('WAN_CAIDA', `WAN: ${pw} → ${cw}`); }
+        else if (pw === 'Connected') { this.stats.wanDrops++; add('WAN_CAIDA', `WAN: ${pw} → ${cw}`); }
       }
 
       // Ritmos

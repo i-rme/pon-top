@@ -117,10 +117,12 @@ Cada evento importante genera un banner en pantalla, un pitido y una notificaci�
 | `PON_CAIDA` / `PON_RECUPERADA` | alerta / info | la ONU sale de O5 (registrada) y vuelve, con la duración del corte |
 | `SALTO_RX` | aviso | la potencia recibida cambia 3 dB o más entre lecturas (`--alert-jump`) |
 | `RX_BAJO` / `RX_NORMAL` | aviso / info | RX por debajo de -26 dBm y su recuperación (`--alert-rx`) |
-| `POSIBLE_REREGISTRO` | aviso | ráfaga de mensajes OMCI muy por encima de lo normal |
+| `POSIBLE_REREGISTRO` | aviso | ráfaga de mensajes OMCI con indicios de corte: el PPPoE se ha reconectado o ha cambiado el ONU ID |
+| `RAFAGA_OMCI` | info | ráfaga OMCI sin ningún corte: la OLT consultando o configurando la ONU, es normal (no avisa) |
+| `WAN_RECONEXION` | aviso | el PPPoE se ha reconectado entre dos lecturas (su tiempo de conexión vuelve a empezar) |
 | `REINICIO_ROUTER` | alerta | el uptime del router ha vuelto a empezar |
 | `CONTADORES_A_CERO` | aviso | los contadores PON se han reiniciado sin reinicio del router |
-| `WAN_CAIDA` / `WAN_OK` | alerta / info | la conexión PPPoE se cae o vuelve |
+| `WAN_CAIDA` / `WAN_OK` | alerta / info | la conexión PPPoE se cae o vuelve (una sola vez por caída, aunque pase por «Connecting») |
 | `TEMP_ALTA` | aviso | el transceptor supera 70 °C (`--alert-temp`) |
 | `SIN_DATOS` / `SESION` | alerta | el router deja de responder o se pierde la sesión |
 
@@ -135,7 +137,9 @@ hora de la última y desde cuándo ocurre. El registro sigue guardando cada una 
 
 Si la RX cambia mientras la fibra está caída, el salto se detecta igualmente al volver
 («tras un corte»), y la ráfaga de mensajes OMCI de una recuperación se considera parte de la
-caída, no un re-registro aparte. Como conexión WAN se muestra la de la ruta por defecto (la de
+caída (también durante el minuto siguiente, mientras la OLT termina de configurar la ONU), no un
+re-registro aparte. La OLT también intercambia unos pocos mensajes OMCI cada 5 minutos y alguna
+ráfaga mayor de vez en cuando; eso es normal y se ve en pantalla junto al contador OMCI. Como conexión WAN se muestra la de la ruta por defecto (la de
 Internet), igual que en la web del router.
 
 Desactívalos con `--no-notify` (sin notificaciones del sistema) o `--no-bell` (sin pitido), o

@@ -154,10 +154,12 @@ export function renderFrame(tr, v, cols, rows) {
         rule();
         const r = tr.rates;
         L.push(` ${p.bold('Tráfico')}  ↓ ${fmtBits(r.downBps).padStart(11)}  ↑ ${fmtBits(r.upBps).padStart(11)}   ${p.dim('pkts')} ↓ ${fmtCount(r.downPps)}/s ↑ ${fmtCount(r.upPps)}/s`);
-        const omciRate = r.omciPerMin === null ? '' : p.dim(`  (${r.omciPerMin.toFixed(1)}/min)`);
+        const omciRate = (r.omciPerMin === null ? '' : p.dim(`  (${r.omciPerMin.toFixed(1)}/min)`)) +
+            (tr.stats.omciBursts ? p.dim(` · ráfagas ${tr.stats.omciBursts}`) : '');
         L.push(` ${p.bold('OMCI')}     ↑ ${fmtCount(s.omciUp)}  ↓ ${fmtCount(s.omciDown)}${omciRate}   ${p.dim('PON total')} ↓ ${fmtCount(s.pktsDown)} ↑ ${fmtCount(s.pktsUp)} pkts`);
+        const wanUp = s.wan?.uptime != null && s.wan.status === 'Connected' ? p.dim(` (${fmtDur(s.wan.uptime)})`) : '';
         const wan = s.wan
-            ? `${s.wan.type} ${s.wan.status === 'Connected' ? p.green(s.wan.status) : p.red(s.wan.status)} ${s.wan.ip}`
+            ? `${s.wan.type} ${s.wan.status === 'Connected' ? p.green(s.wan.status) : p.red(s.wan.status)} ${s.wan.ip}${wanUp}`
             : '--';
         L.push(` ${p.bold('Router')}   uptime ${s.uptime === null ? '--' : fmtDur(s.uptime)}   CPU ${f(s.cpu, 0, '%')}   RAM ${f(s.mem, 0, '%')}   WAN ${wan}`);
         rule();
@@ -166,7 +168,7 @@ export function renderFrame(tr, v, cols, rows) {
         const sep = p.dim(' · ');
         L.push(` ${p.bold('Sesión')}   ${fmtDur((Date.now() - v.startedAt) / 1000)}${sep}${tr.samples.length} lect.   ` +
             [`caídas ${n(st2.ponDrops, p.red)}`, `saltos RX ${n(st2.rxJumps, p.yellow)}`, `re-reg ${n(st2.reregs, p.yellow)}`,
-                `reinicios ${n(st2.reboots, p.red)}`, `WAN ${n(st2.wanDrops, p.red)}`, `errores ${n(st2.errors, p.red)}`].join(sep));
+                `reinicios ${n(st2.reboots, p.red)}`, `WAN ${n(st2.wanDrops + st2.wanReconnects, p.red)}`, `errores ${n(st2.errors, p.red)}`].join(sep));
         const T = tr.time;
         if (T.total > 0) {
             const av = (T.o5 / T.total) * 100;

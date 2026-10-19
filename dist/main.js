@@ -11,7 +11,7 @@ import { Recorder, isoLocal } from './log.js';
 import { Alerter } from './alerts.js';
 import { analyze, loadRecords, renderReport, defaultReportPaths } from './report.js';
 import { SessionKeeper } from './session.js';
-const VERSION = '0.2.2';
+const VERSION = '0.2.3';
 const BUILD = typeof __PON_TOP_BUILD__ === 'string' ? __PON_TOP_BUILD__ : null;
 const FULL_VERSION = BUILD ? `${VERSION} (${BUILD})` : VERSION;
 const DEFAULT_USER = 'user';

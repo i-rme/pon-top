@@ -87,7 +87,7 @@ export class Recorder {
             fecUs: s.fecUs, fecDs: s.fecDs,
             omciUp: s.omciUp, omciDown: s.omciDown, pktsUp: s.pktsUp, pktsDown: s.pktsDown, bytesUp: s.bytesUp, bytesDown: s.bytesDown,
             uptime: s.uptime, cpu: s.cpu, mem: r(s.mem, 1),
-            wan: s.wan ? { type: s.wan.type, status: s.wan.status, ip: s.wan.ip, gw: s.wan.gateway } : null,
+            wan: s.wan ? { name: s.wan.name, type: s.wan.type, status: s.wan.status, ip: s.wan.ip, gw: s.wan.gateway, uptime: s.wan.uptime ?? null } : null,
         };
         if (s.raw)
             rec['raw'] = { optc: s.raw.optc, stats: s.raw.stats, omci: s.raw.omci };

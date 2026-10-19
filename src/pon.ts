@@ -7,6 +7,8 @@ export interface WanInfo {
   status: string; // "Connected", "Disconnected"...
   ip: string;
   gateway: string;
+  /** Segundos que lleva conectada (X_TP_Uptime); vuelve a empezar si se reconecta */
+  uptime?: number | null;
 }
 
 export interface PonSample {
@@ -98,6 +100,7 @@ export function pickWan(list: Obj[], defaultConn: string | null = null): WanInfo
     status: String(w['connStatusV4'] ?? '?'),
     ip: String(w['connIPv4Address'] ?? ''),
     gateway: String(w['connIPv4Gateway'] ?? ''),
+    uptime: num(w['X_TP_Uptime']),
   };
 }
 

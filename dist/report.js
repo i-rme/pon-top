@@ -46,7 +46,7 @@ function toSample(r) {
         vcc: num(r['vcc']), bias: num(r['bias']), fecUs: null, fecDs: null,
         bytesUp: num(r['bytesUp']), bytesDown: num(r['bytesDown']), pktsUp: num(r['pktsUp']), pktsDown: num(r['pktsDown']),
         omciUp: num(r['omciUp']), omciDown: num(r['omciDown']), uptime: num(r['uptime']), cpu: num(r['cpu']), mem: num(r['mem']),
-        wan: wan ? { name: '', type: wan.type ?? '', status: wan.status ?? '', ip: wan.ip ?? '', gateway: '' } : null,
+        wan: wan ? { name: wan.name ?? '', type: wan.type ?? '', status: wan.status ?? '', ip: wan.ip ?? '', gateway: '', uptime: num(wan.uptime) } : null,
     };
 }
 const nf = (v, d = 2) => v.toLocaleString('es-ES', { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -135,7 +135,8 @@ export function analyze(records, thresholds = {}) {
         observed: tr.time.total, o5: tr.time.o5, rxLow: tr.time.rxLow,
         rxMin: tr.rxMin, rxMax: tr.rxMax, rxMedian, levels, drops,
         jumps: evs.filter(e => e.kind === 'SALTO_RX').map(e => ({ t: e.t, msg: e.msg })),
-        reregs: tr.stats.reregs, reboots: tr.stats.reboots, wanDrops: tr.stats.wanDrops,
+        reregs: tr.stats.reregs, omciBursts: tr.stats.omciBursts, wanReconnects: tr.stats.wanReconnects,
+        reboots: tr.stats.reboots, wanDrops: tr.stats.wanDrops,
         gaps, liveEvents, th: tr.th, ponType: last.ponType, onuId: last.onuId,
     };
 }
@@ -160,8 +161,9 @@ export function renderReport(d) {
     L.push(`| Potencia recibida (RX) | mín ${dbm(d.rxMin)} · mediana ${dbm(d.rxMedian)} · máx ${dbm(d.rxMax)} |`);
     L.push(`| Tiempo con RX por debajo de ${d.th.rxLow} dBm | ${durLarga(d.rxLow)} (${pct(lowPct)}) |`);
     L.push(`| Cambios bruscos de RX (≥ ${d.th.rxJump} dB) | ${d.jumps.length} |`);
-    L.push(`| Posibles re-registros (ráfagas OMCI) | ${d.reregs} |`);
-    L.push(`| Caídas de la conexión WAN (PPPoE) | ${d.wanDrops} |`);
+    L.push(`| Posibles re-registros de la ONU | ${d.reregs} |`);
+    L.push(`| Caídas de la conexión WAN (PPPoE) | ${d.wanDrops}${d.wanReconnects ? ` (+${d.wanReconnects} reconexiones cortas entre lecturas)` : ''} |`);
+    L.push(`| Ráfagas OMCI sin corte (consultas de la OLT, normales) | ${d.omciBursts} |`);
     L.push(`| Reinicios del router | ${d.reboots} |`);
     if (d.liveEvents['SESION'] || d.liveEvents['SIN_DATOS'])
         L.push(`| Incidencias del propio monitor | ${d.liveEvents['SESION'] ?? 0} sesiones perdidas, ${d.liveEvents['SIN_DATOS'] ?? 0} periodos sin respuesta |`);
@@ -227,9 +229,10 @@ function digiText(d, avail, lowPct, downTotal) {
             t.push(`Estuvo por debajo de ${d.th.rxLow} dBm el ${pct(lowPct)} del tiempo, muy cerca del límite de sensibilidad del receptor XGS-PON (unos -28 dBm).`);
     }
     if (d.reregs)
-        t.push(`Se detectaron además ${d.reregs} posibles re-registros de la ONU (ráfagas de mensajes OMCI).`);
-    if (d.wanDrops)
-        t.push(`La conexión PPPoE se cayó ${d.wanDrops} ${d.wanDrops === 1 ? 'vez' : 'veces'}.`);
+        t.push(`Se detectaron además ${d.reregs} posibles re-registros de la ONU sin pérdida de registro visible (ráfagas de mensajes OMCI acompañadas de reconexión del PPPoE o cambio de ONU ID).`);
+    const wanTotal = d.wanDrops + d.wanReconnects;
+    if (wanTotal)
+        t.push(`La conexión PPPoE se cayó o se reconectó ${wanTotal} ${wanTotal === 1 ? 'vez' : 'veces'}.`);
     if (d.drops.length || d.jumps.length || lowPct >= 1 || d.reregs) {
         t.push('Ya he descartado el latiguillo y los conectores de casa. El comportamiento apunta a una atenuación excesiva o intermitente en la red óptica (roseta, acometida, CTO o empalmes), por lo que solicito una revisión de la línea con medición de potencia. Puedo facilitar el registro detallado.');
     }

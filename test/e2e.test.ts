@@ -107,11 +107,12 @@ export function testTracker(): void {
   const base: PonSample = {
     t: 0, ponType: 'XGSPON', onuId: '131', statusCode: 5, state: 'O5', rx: -17.67, rxRaw: 171, tx: 6, temp: 47, vcc: 3333, bias: 17.7,
     fecUs: true, fecDs: true, bytesUp: 100, bytesDown: 4294967000, pktsUp: 10, pktsDown: 1000, omciUp: 740, omciDown: 720,
-    uptime: 1000, cpu: 10, mem: 40, wan: { name: 'w', type: 'PPPoE', status: 'Connected', ip: '1.2.3.4', gateway: '' },
+    uptime: 1000, cpu: 10, mem: 40, wan: { name: 'w', type: 'PPPoE', status: 'Connected', ip: '1.2.3.4', gateway: '', uptime: 500 },
   };
   const seen: string[] = [];
   const tr = new Tracker({ onEvent: e => seen.push(e.kind) });
-  const at = (sec: number, patch: Partial<PonSample>): PonSample => ({ ...base, t: sec * 1000, uptime: 1000 + sec, pktsDown: 1000 + sec * 10, ...patch });
+  const wan = (sec: number, extra: Partial<NonNullable<PonSample['wan']>> = {}) => ({ ...base.wan!, uptime: 500 + sec, ...extra });
+  const at = (sec: number, patch: Partial<PonSample>): PonSample => ({ ...base, t: sec * 1000, uptime: 1000 + sec, pktsDown: 1000 + sec * 10, wan: wan(sec), ...patch });
   const kinds = (s: PonSample) => tr.push(s).map(e => e.kind);
   const msgs: string[] = [];
   const push = (s: PonSample) => { const ev = tr.push(s); msgs.push(...ev.map(e => e.msg)); return ev.map(e => e.kind); };
@@ -123,22 +124,25 @@ export function testTracker(): void {
   assert.deepEqual(push(at(10, { rx: -27.45, rxRaw: 18 })), ['SALTO_RX', 'RX_BAJO']);
   // caída (O2) y recuperación; la ráfaga OMCI de la recuperación no cuenta como re-registro aparte
   assert.deepEqual(push(at(15, { state: 'O2', statusCode: 2, tx: null, onuId: '255', rx: -27.45, wan: { ...base.wan!, status: 'Disconnected' } })), ['PON_CAIDA', 'WAN_CAIDA']);
+  // Disconnected → Connecting sigue siendo la misma caída
+  assert.deepEqual(push(at(38, { state: 'O2', statusCode: 2, tx: null, onuId: '255', rx: -27.45, wan: wan(38, { status: 'Connecting' }) })), []);
   assert.deepEqual(push(at(40, { rx: -27.45, omciDown: 728 })), ['PON_RECUPERADA', 'WAN_OK']);
+  // la OLT termina de configurar la ONU justo después: no es una ráfaga aparte
+  assert.deepEqual(push(at(42, { rx: -27.45, omciDown: 740 })), []);
   // vuelve el RX bueno: salto + RX normal (histéresis de 1 dB)
-  assert.deepEqual(push(at(45, { rx: -17.67, omciDown: 728 })), ['SALTO_RX', 'RX_NORMAL']);
+  assert.deepEqual(push(at(45, { rx: -17.67, omciDown: 740 })), ['SALTO_RX', 'RX_NORMAL']);
   // temperatura alta, sin repetir mientras siga alta
-  assert.deepEqual(push(at(50, { temp: 75, omciDown: 728 })), ['TEMP_ALTA']);
-  assert.deepEqual(push(at(55, { temp: 74, omciDown: 728 })), []);
-  // re-registro silencioso (sin caída observada)
-  assert.deepEqual(push(at(60, { omciDown: 740 })), ['POSIBLE_REREGISTRO']);
+  assert.deepEqual(push(at(50, { temp: 75, omciDown: 740 })), ['TEMP_ALTA']);
+  assert.deepEqual(push(at(55, { temp: 74, omciDown: 740 })), []);
+  assert.deepEqual(push(at(60, { omciDown: 740 })), []);
   // pérdida total de señal (DESC) y vuelta con otra potencia: el salto se detecta aunque en medio no hubiera RX
   assert.deepEqual(push(at(65, { state: 'DESC', statusCode: 0, rx: null, rxRaw: 0, tx: null, omciDown: 740 })), ['PON_CAIDA']);
   assert.match(msgs.at(-1)!, /O5 → DESC \(sin señal óptica\) \(RX previo -17\.67 dBm\)/);
   assert.deepEqual(push(at(70, { rx: -27.45, rxRaw: 18, omciDown: 740 })), ['PON_RECUPERADA', 'SALTO_RX', 'RX_BAJO']);
   assert.match(msgs.find(m => m.includes('tras un corte'))!, /RX -17\.67 → -27\.45 dBm \(-9\.8 dB\) tras un corte/);
-  // reinicio del router
-  assert.equal(kinds({ ...base, t: 75000, uptime: 30, pktsDown: 5, rx: -27.45, omciDown: 740 })[0], 'REINICIO_ROUTER');
-  assert.deepEqual(tr.stats, { ponDrops: 2, rxJumps: 3, reboots: 1, reregs: 1, wanDrops: 1, errors: 0 });
+  // reinicio del router (el uptime del PPPoE también empieza de cero, pero no es una reconexión aparte)
+  assert.deepEqual(kinds({ ...base, t: 75000, uptime: 30, pktsDown: 5, rx: -27.45, omciDown: 752, wan: wan(0, { uptime: 1 }) }), ['REINICIO_ROUTER']);
+  assert.deepEqual(tr.stats, { ponDrops: 2, rxJumps: 3, reboots: 1, reregs: 0, wanDrops: 1, errors: 0, omciBursts: 0, wanReconnects: 0 });
   // tiempos: caídas 15→40 y 65→70; RX bajo en 10→45 y 70→75
   assert.equal(tr.time.total, 75);
   assert.equal(tr.time.down, 30);
@@ -157,5 +161,23 @@ export function testTracker(): void {
   assert.equal(tr.events.filter(e => e.kind === 'PON_CAIDA').length, 2, 'O2 y DESC son caídas distintas');
   assert.equal(seen.filter(k => k === 'ERROR_LECTURA').length, 3);
   assert.equal(tr.events.at(-1)!.kind, 'INFO', 'lo último arriba');
+
+  // Ráfagas OMCI y reconexiones del PPPoE con la línea estable (sin caídas recientes)
+  const t2 = new Tracker();
+  const m2: string[] = [];
+  const p2 = (s: PonSample) => { const ev = t2.push(s); m2.push(...ev.map(e => e.msg)); return ev.map(e => e.kind); };
+  assert.deepEqual(p2(at(0, {})), []);
+  // ráfaga sin ningún indicio de corte: consulta de la OLT, no re-registro
+  assert.deepEqual(p2(at(5, { omciUp: 758, omciDown: 738 })), ['RAFAGA_OMCI']);
+  assert.match(m2.at(-1)!, /OMCI \+18\/\+18 en 5s sin corte/);
+  // PPPoE reconectado entre dos lecturas (su uptime vuelve a empezar), sin ráfaga
+  assert.deepEqual(p2(at(10, { omciUp: 758, omciDown: 738, wan: wan(10, { uptime: 2 }) })), ['WAN_RECONEXION']);
+  assert.match(m2.at(-1)!, /PPPoE reconectado entre dos lecturas \(llevaba 8m 25s, ahora 2s\)/);
+  // ráfaga + reconexión del PPPoE: posible re-registro corto
+  assert.deepEqual(p2(at(15, { omciUp: 770, omciDown: 750, wan: wan(15, { uptime: 1 }) })), ['WAN_RECONEXION', 'POSIBLE_REREGISTRO']);
+  assert.match(m2.at(-1)!, /OMCI \+12\/\+12 en 5s; el PPPoE se ha reconectado/);
+  // ráfaga con cambio de ONU ID
+  assert.deepEqual(p2(at(20, { omciUp: 782, omciDown: 762, onuId: '132', wan: wan(20, { uptime: 6 }) })), ['POSIBLE_REREGISTRO']);
+  assert.deepEqual(t2.stats, { ponDrops: 0, rxJumps: 0, reboots: 0, reregs: 2, wanDrops: 0, errors: 0, omciBursts: 1, wanReconnects: 2 });
   console.log('tracker OK');
 }

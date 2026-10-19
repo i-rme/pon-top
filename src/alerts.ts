@@ -13,14 +13,14 @@ export interface AlertConfig {
 /** Eventos que generan aviso (los de severidad info solo si son buenas noticias tras un problema) */
 const NOTIFY: ReadonlySet<EventKind> = new Set<EventKind>([
   'PON_CAIDA', 'PON_RECUPERADA', 'SALTO_RX', 'RX_BAJO', 'RX_NORMAL', 'POSIBLE_REREGISTRO',
-  'REINICIO_ROUTER', 'CONTADORES_A_CERO', 'WAN_CAIDA', 'WAN_OK', 'TEMP_ALTA', 'SIN_DATOS', 'SESION',
+  'REINICIO_ROUTER', 'CONTADORES_A_CERO', 'WAN_CAIDA', 'WAN_OK', 'WAN_RECONEXION', 'TEMP_ALTA', 'SIN_DATOS', 'SESION',
 ]);
 
 const TITLES: Partial<Record<EventKind, string>> = {
   PON_CAIDA: 'Fibra caída', PON_RECUPERADA: 'Fibra recuperada', SALTO_RX: 'Salto de potencia RX',
   RX_BAJO: 'Potencia RX baja', RX_NORMAL: 'Potencia RX normal', POSIBLE_REREGISTRO: 'Posible re-registro PON',
   REINICIO_ROUTER: 'Router reiniciado', CONTADORES_A_CERO: 'Contadores PON a cero', WAN_CAIDA: 'Internet caído',
-  WAN_OK: 'Internet recuperado', TEMP_ALTA: 'Temperatura alta', SIN_DATOS: 'El router no responde', SESION: 'Sesión perdida',
+  WAN_OK: 'Internet recuperado', WAN_RECONEXION: 'PPPoE reconectado', TEMP_ALTA: 'Temperatura alta', SIN_DATOS: 'El router no responde', SESION: 'Sesión perdida',
 };
 
 /** Quita direcciones IP antes de mandar un aviso fuera del ordenador */

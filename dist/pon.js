@@ -46,6 +46,7 @@ export function pickWan(list, defaultConn = null) {
         status: String(w['connStatusV4'] ?? '?'),
         ip: String(w['connIPv4Address'] ?? ''),
         gateway: String(w['connIPv4Gateway'] ?? ''),
+        uptime: num(w['X_TP_Uptime']),
     };
 }
 // La ruta por defecto casi nunca cambia: se consulta como mucho una vez por minuto
