@@ -10,8 +10,9 @@ import { createDemoSource } from './demo.js';
 import { Recorder, isoLocal } from './log.js';
 import { Alerter } from './alerts.js';
 import { analyze, loadRecords, renderReport, defaultReportPaths } from './report.js';
+import { SessionKeeper, type SessionNote } from './session.js';
 
-const VERSION = '0.2.1';
+const VERSION = '0.2.2';
 const DEFAULT_USER = 'user';
 
 interface Args {
@@ -49,7 +50,7 @@ Conexión:
   --user <nombre>        usuario (por defecto: ${DEFAULT_USER}; si no se indica se pregunta)
   -i, --interval <s>     segundos entre lecturas (por defecto 5, mínimo 2)
   --force                cerrar sin preguntar otra sesión abierta en el router
-  --relogin              reconectar solo si se pierde la sesión
+  --no-relogin           no volver a entrar solo cuando el router cierra la sesión
   --allow-public         permitir un host que no sea de red local
 
 Registro (activado por defecto):
@@ -80,7 +81,7 @@ function parseArgs(argv: string[]): Args {
   const a: Args = {
     cmd: 'top', paths: [], host: process.env['PON_TOP_HOST'] || '192.168.1.1', user: null, interval: 5,
     logDir: 'pon-logs', logFile: null, force: false, allowPublic: false, demo: false, json: false,
-    relogin: false, debug: false, help: false, bell: true, desktop: true, webhook: null, cooldown: 60,
+    relogin: true, debug: false, help: false, bell: true, desktop: true, webhook: null, cooldown: 60,
     th: { ...DEFAULT_THRESHOLDS }, out: null,
   };
   const need = (i: number, flag: string, allowNeg = false) => {
@@ -105,7 +106,8 @@ function parseArgs(argv: string[]): Args {
       case '--no-log': a.logDir = null; a.logFile = null; break;
       case '--json': a.json = true; break;
       case '--force': a.force = true; break;
-      case '--relogin': a.relogin = true; break;
+      case '--relogin': a.relogin = true; break; // por compatibilidad: ya es lo predeterminado
+      case '--no-relogin': a.relogin = false; break;
       case '--demo': a.demo = true; break;
       case '--debug': a.debug = true; break;
       case '--allow-public': a.allowPublic = true; break;
@@ -148,11 +150,15 @@ export function isLocalHost(base: string): boolean {
 
 interface Source {
   read(): Promise<PonSample>;
+  /** Reconexión manual (tecla l) */
   relogin(): Promise<void>;
   close(): Promise<void>;
   model: string | null;
   devInfo: Obj | null;
   client?: RouterClient;
+  keeper?: SessionKeeper;
+  /** Recibe los avisos de la gestión de sesión */
+  onNote: (n: SessionNote) => void;
 }
 
 async function connect(a: Args): Promise<Source> {
@@ -185,19 +191,25 @@ async function connect(a: Args): Promise<Source> {
   const devInfo = await readDevInfo(client);
   const model = devInfo ? [devInfo['modelName'], devInfo['softwareVersion']].filter(Boolean).join(' · ') || null : null;
 
-  return {
+  const src: Source = {
     model,
     devInfo,
-    read: () => readPon(client),
-    relogin: async () => { await client.login(user, password); },
+    read: () => keeper.run(() => readPon(client)),
+    relogin: () => keeper.renew(true),
     close: async () => { await client.logout(); password = ''; },
     client,
+    onNote: () => {},
   };
+  const keeper = new SessionKeeper(client, () => client.login(user, password), {
+    auto: a.relogin, force: a.force, onNote: n => src.onNote(n),
+  });
+  src.keeper = keeper;
+  return src;
 }
 
 function demoSource(): Source {
   const read = createDemoSource();
-  return { model: 'XGB430v Pro (demo)', devInfo: { modelName: 'XGB430v Pro (demo)' }, read, relogin: async () => {}, close: async () => {} };
+  return { model: 'XGB430v Pro (demo)', devInfo: { modelName: 'XGB430v Pro (demo)' }, read, relogin: async () => {}, close: async () => {}, onNote: () => {} };
 }
 
 function notifyDesc(a: Args): string {
@@ -220,6 +232,8 @@ function wire(a: Args, src: Source, rec: Recorder, bell: () => void, onAlert: (e
     model: src.model, devInfo: src.devInfo, notify: notifyDesc(a),
   });
   rec.session('login', 'Sesión iniciada en el router');
+  // (el evento ya queda en el registro a través del seguimiento)
+  src.onNote = n => { tr.emit(n.kind === 'renewed' ? 'INFO' : 'SESION', n.msg); };
   return { tr, alerter };
 }
 
@@ -245,9 +259,8 @@ async function runJson(src: Source, a: Args, rec: Recorder): Promise<void> {
       rec.error(msg);
       process.stderr.write(`error: ${msg}\n`);
       if (e instanceof RouterError && e.code === 'SESSION') {
-        tr.emit('SESION', 'Sesión perdida');
-        if (!a.relogin) break;
-        try { await src.relogin(); rec.session('relogin', 'Sesión restablecida'); } catch { /* se reintenta */ }
+        if (!a.relogin || src.keeper?.blocked) { tr.emit('SESION', msg); break; }
+        // la propia gestión de sesión decide cuándo reintentar
       } else tr.error(msg);
     }
     for (let i = 0; i < a.interval * 10 && !stop; i++) await new Promise(r => setTimeout(r, 100));
@@ -283,13 +296,13 @@ async function runTop(src: Source, a: Args, rec: Recorder): Promise<void> {
       view.message = null;
     } catch (e) {
       const err = e as RouterError;
-      rec.error(err.message);
       if (err.code === 'SESSION') {
-        view.connected = false;
-        tr.emit('SESION', 'Sesión perdida (¿alguien ha entrado al router desde otro sitio?)');
-        view.message = a.relogin ? 'Reconectando…' : 'Sesión perdida: pulsa l para reconectar';
-        if (a.relogin) setTimeout(() => void reconnect(), 5000);
+        // Sin sesión: la gestión de sesión ya ha avisado; se sigue intentando en cada lectura
+        if (!a.relogin || src.keeper?.blocked) view.connected = false; // hace falta pulsar l
+        view.message = !a.relogin ? 'El router ha cerrado la sesión: pulsa l para volver a entrar' : err.message;
+        if (!a.relogin) tr.emit('SESION', 'El router ha cerrado la sesión');
       } else {
+        rec.error(err.message);
         tr.error(err.message);
       }
     } finally {
@@ -302,16 +315,12 @@ async function runTop(src: Source, a: Args, rec: Recorder): Promise<void> {
   async function reconnect(): Promise<void> {
     view.message = 'Reconectando…'; draw();
     try {
-      await src.relogin();
+      await src.relogin(); // las notas de sesión ya registran el resultado
       view.connected = true;
       view.message = null;
-      rec.session('relogin', 'Sesión restablecida');
-      tr.emit('INFO', 'Sesión restablecida');
       schedule(100);
     } catch (e) {
-      view.message = `No se pudo reconectar: ${(e as Error).message}`;
-      rec.session('relogin_fallido', view.message);
-      if (a.relogin) setTimeout(() => void reconnect(), 60_000);
+      view.message = (e as Error).message;
     }
     draw();
   }
@@ -345,7 +354,7 @@ async function runTop(src: Source, a: Args, rec: Recorder): Promise<void> {
     else if (k === '-') { view.intervalSec = Math.max(2, view.intervalSec - 1); draw(); }
     else if (k === 'v') { view.rawView = !view.rawView; draw(); }
     else if (k === 'm') { view.muted = alerter.muted = !alerter.muted; draw(); }
-    else if (k === 'l' && !view.connected) void reconnect();
+    else if (k === 'l') void reconnect();
   });
   process.on('SIGTERM', () => void quit());
   process.on('SIGHUP', () => void quit());

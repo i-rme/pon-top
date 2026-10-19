@@ -43,20 +43,33 @@ export class RouterClient {
             headers['Cookie'] = [...this.cookies].map(([k, v]) => `${k}=${v}`).join('; ');
         if (this.token)
             headers['TokenID'] = this.token;
-        let res;
-        try {
-            res = await fetch(this.base + path, {
-                method: body !== undefined ? 'POST' : 'GET',
-                headers,
-                body,
-                redirect: 'manual',
-                signal: AbortSignal.timeout(this.timeoutMs),
-            });
+        // Una conexión por petición: el router cierra el socket cuando invalida la sesión y algunos
+        // runtimes (Bun) seguirían reutilizando la conexión muerta del pool indefinidamente.
+        headers['Connection'] = 'close';
+        const init = {
+            method: body !== undefined ? 'POST' : 'GET',
+            headers,
+            body,
+            redirect: 'manual',
+            keepalive: false,
+        };
+        let res = null;
+        for (let attempt = 1;; attempt++) {
+            try {
+                res = await fetch(this.base + path, { ...init, signal: AbortSignal.timeout(this.timeoutMs) });
+                break;
+            }
+            catch (e) {
+                const msg = e.message;
+                // Un socket cerrado a destiempo se reintenta una vez con una conexión nueva
+                if (attempt === 1 && /closed|reset|ECONNRESET|socket|terminated/i.test(msg)) {
+                    this.log(`${path}: ${msg} -> reintento`);
+                    continue;
+                }
+                throw new RouterError(`No se puede conectar con ${this.base}${path}: ${msg.replace(/\. For more information.*$/, '')}`, 'NET');
+            }
         }
-        catch (e) {
-            throw new RouterError(`No se puede conectar con ${this.base}${path}: ${e.message}`, 'NET');
-        }
-        for (const c of res.headers.getSetCookie()) {
+        for (const c of res.headers.getSetCookie?.() ?? []) {
             const kv = c.split(';')[0] ?? '';
             const i = kv.indexOf('=');
             if (i > 0)
@@ -243,8 +256,11 @@ export class RouterClient {
             throw new RouterError('No hay sesión iniciada', 'SESSION');
     }
     checkHttp(status) {
-        if (status === 401 || status === 403)
-            throw new RouterError(`Sesión rechazada por el router (HTTP ${status})`, 'SESSION');
+        // El router responde 406 (Not Acceptable) cuando la sesión ha caducado o la ha cerrado otro acceso
+        if (status === 401 || status === 403 || status === 406) {
+            this.loggedIn = false;
+            throw new RouterError(`El router ha cerrado la sesión (HTTP ${status})`, 'SESSION');
+        }
         if (status >= 400)
             throw new RouterError(`HTTP ${status}`, 'HTTP');
     }

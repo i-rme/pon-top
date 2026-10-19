@@ -6,17 +6,23 @@ import { createCipheriv, createDecipheriv, createHash, generateKeyPairSync } fro
 const modPow = (b: bigint, x: bigint, m: bigint) => { let r = 1n; b %= m; while (x > 0n) { if (x & 1n) r = r * b % m; b = b * b % m; x >>= 1n; } return r; };
 const md5 = (s: string) => createHash('md5').update(s, 'utf8').digest('hex');
 
-export interface MockOptions { user: string; password: string; omciBurst?: boolean }
+export interface MockOptions {
+  user: string;
+  password: string;
+  omciBurst?: boolean;
+  /** Caducidad de la sesión (el router real la cierra a los ~10 min) */
+  sessionTtlMs?: number;
+}
 
-export async function startMockRouter(opts: MockOptions): Promise<{ port: number; server: Server; state: { loginOk: number; requests: string[] } }> {
+export async function startMockRouter(opts: MockOptions): Promise<{ port: number; server: Server; state: { loginOk: number; loginFail: number; requests: string[]; otherSession: boolean; expired: number } }> {
   const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 512 });
   const jwk = privateKey.export({ format: 'jwk' }) as { n: string; e: string; d: string };
   const big = (s: string) => BigInt('0x' + Buffer.from(s, 'base64url').toString('hex'));
   const n = big(jwk.n), d = big(jwk.d);
   const nn = n.toString(16).toUpperCase();
   const seq = 123456789;
-  let session: { key: string; iv: string; hash: string; cookie: string; token: string } | null = null;
-  const state = { loginOk: 0, requests: [] as string[] };
+  let session: { key: string; iv: string; hash: string; cookie: string; token: string; start: number } | null = null;
+  const state = { loginOk: 0, loginFail: 0, requests: [] as string[], otherSession: false, expired: 0 };
   let omci = 742;
 
   const rsaDecrypt = (hex: string) => {
@@ -58,7 +64,7 @@ export async function startMockRouter(opts: MockOptions): Promise<{ port: number
       const cookieOk = session && (req.headers['cookie'] ?? '').includes(`JSESSIONID=${session.cookie}`);
 
       if (url === '/cgi/getGDPRParm') { res.end(`var adminSetting=1;\nvar userSetting=1;\nvar logoUrl="";\nvar ee="010001";\nvar nn="${nn}";\nvar seq="${seq}";\n$.ret=0;\n`); return; }
-      if (url === '/cgi/getBusy') { res.end(`var isLogined=${session ? 1 : 0};\nvar isBusy=0;\n$.ret=0;\n`); return; }
+      if (url === '/cgi/getBusy') { res.end(`var isLogined=${session || state.otherSession ? 1 : 0};\nvar isBusy=0;\n$.ret=0;\n`); return; }
       if (url === '/' && req.method === 'GET') {
         res.end(cookieOk ? `<html><script type="text/javascript">var token="${session!.token}";</script></html>` : '<html>login</html>');
         return;
@@ -76,16 +82,24 @@ export async function startMockRouter(opts: MockOptions): Promise<{ port: number
           const pass = Buffer.from(plain.data.Passwd, 'base64').toString();
           const ok = okSeq && plain.oid === '/cgi/login' && plain.operation === 'cgi' && user === opts.user && pass === opts.password && p['h'] === md5(user + pass);
           if (ok) {
-            session = { key: p['key']!, iv: p['iv']!, hash: p['h']!, cookie: 'c' + Date.now(), token: 'tok' + Date.now() };
+            session = { key: p['key']!, iv: p['iv']!, hash: p['h']!, cookie: 'c' + Date.now(), token: 'tok' + Date.now(), start: Date.now() };
             state.loginOk++;
+            state.otherSession = false; // entrar cierra cualquier otra sesión
             res.setHeader('Set-Cookie', `JSESSIONID=${session.cookie}; Path=/; HttpOnly`);
             res.end(aesEnc(p['key']!, p['iv']!, '$.ret=0;\n'));
           } else {
+            state.loginFail++;
             res.end(aesEnc(p['key']!, p['iv']!, '$.ret=71233;\n'));
           }
           return;
         }
-        if (!session || !cookieOk || req.headers['tokenid'] !== session.token) { res.writeHead(403); res.end(); return; }
+        if (session && opts.sessionTtlMs && Date.now() - session.start > opts.sessionTtlMs) { session = null; state.expired++; }
+        if (!session || !cookieOk || req.headers['tokenid'] !== session.token) {
+          // Como el router real: 406 y cierra la conexión (un cliente que reutilice el socket fallará)
+          res.writeHead(406, { 'Content-Type': 'text/html' });
+          res.end('<html><head><title>406 Not Acceptable</title></head></html>', () => req.socket.destroy());
+          return;
+        }
         const p = Object.fromEntries(sign.split('&').map(kv => kv.split('=') as [string, string]));
         if (p['h'] !== session.hash || Number(p['s']) !== seq + dataB64.length) { res.writeHead(403); res.end('bad sign'); return; }
         const req2 = JSON.parse(aesDec(session.key, session.iv, dataB64).trim());

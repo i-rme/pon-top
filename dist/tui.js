@@ -228,7 +228,7 @@ export function renderFrame(tr, v, cols, rows) {
     L.push(v.message ? p.yellow(' ' + v.message) : info);
     const k = (key, label) => `${p.inverse(` ${key} `)} ${label}`;
     const keys = ' ' + [k('q', 'salir'), k('p', 'pausa'), k('r', 'leer'), k('+/-', 'intervalo'), k('v', v.rawView ? 'eventos' : 'datos'),
-        k('m', v.muted ? p.yellow('avisos OFF') : 'silenciar'), k('l', 'reconectar')].join(' ');
+        k('m', v.muted ? p.yellow('avisos OFF') : 'silenciar'), k('l', 'reentrar')].join(' ');
     L.push(keys);
     return L.slice(0, rows).map(l => truncate(l, W));
 }

@@ -1,6 +1,6 @@
 {
   "name": "pon-top",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Monitor tipo htop del estado PON/XGS-PON del router TP-Link XGB430v Pro (Digi), hablando directamente con su API cifrada",
   "type": "module",
   "bin": {

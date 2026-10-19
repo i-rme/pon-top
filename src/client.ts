@@ -58,19 +58,33 @@ export class RouterClient {
     if (this.cookies.size) headers['Cookie'] = [...this.cookies].map(([k, v]) => `${k}=${v}`).join('; ');
     if (this.token) headers['TokenID'] = this.token;
 
-    let res: Response;
-    try {
-      res = await fetch(this.base + path, {
-        method: body !== undefined ? 'POST' : 'GET',
-        headers,
-        body,
-        redirect: 'manual',
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
-    } catch (e) {
-      throw new RouterError(`No se puede conectar con ${this.base}${path}: ${(e as Error).message}`, 'NET');
+    // Una conexión por petición: el router cierra el socket cuando invalida la sesión y algunos
+    // runtimes (Bun) seguirían reutilizando la conexión muerta del pool indefinidamente.
+    headers['Connection'] = 'close';
+    const init: RequestInit & { keepalive?: boolean } = {
+      method: body !== undefined ? 'POST' : 'GET',
+      headers,
+      body,
+      redirect: 'manual',
+      keepalive: false,
+    };
+
+    let res: Response | null = null;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        res = await fetch(this.base + path, { ...init, signal: AbortSignal.timeout(this.timeoutMs) });
+        break;
+      } catch (e) {
+        const msg = (e as Error).message;
+        // Un socket cerrado a destiempo se reintenta una vez con una conexión nueva
+        if (attempt === 1 && /closed|reset|ECONNRESET|socket|terminated/i.test(msg)) {
+          this.log(`${path}: ${msg} -> reintento`);
+          continue;
+        }
+        throw new RouterError(`No se puede conectar con ${this.base}${path}: ${msg.replace(/\. For more information.*$/, '')}`, 'NET');
+      }
     }
-    for (const c of res.headers.getSetCookie()) {
+    for (const c of res.headers.getSetCookie?.() ?? []) {
       const kv = c.split(';')[0] ?? '';
       const i = kv.indexOf('=');
       if (i > 0) this.cookies.set(kv.slice(0, i).trim(), kv.slice(i + 1).trim());
@@ -244,7 +258,11 @@ export class RouterClient {
   }
 
   private checkHttp(status: number): void {
-    if (status === 401 || status === 403) throw new RouterError(`Sesión rechazada por el router (HTTP ${status})`, 'SESSION');
+    // El router responde 406 (Not Acceptable) cuando la sesión ha caducado o la ha cerrado otro acceso
+    if (status === 401 || status === 403 || status === 406) {
+      this.loggedIn = false;
+      throw new RouterError(`El router ha cerrado la sesión (HTTP ${status})`, 'SESSION');
+    }
     if (status >= 400) throw new RouterError(`HTTP ${status}`, 'HTTP');
   }
 }

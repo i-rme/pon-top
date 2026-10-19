@@ -2,6 +2,7 @@
 import { closeSync, mkdirSync, openSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 const pad = (n, w = 2) => String(n).padStart(w, '0');
+const VOLATILE_WAN = /^X_TP_(Bytes|Packets|Uptime)/;
 /** Fecha local AAAA-MM-DD */
 export function localDate(t) {
     const d = new Date(t);
@@ -93,7 +94,8 @@ export class Recorder {
         this.write(rec);
         // La lista completa de conexiones WAN solo cuando cambia (es grande y casi siempre igual)
         if (s.raw?.wan) {
-            const j = JSON.stringify(s.raw.wan);
+            // Se comparan sin los contadores de tráfico y uptime, que cambian en cada lectura
+            const j = JSON.stringify(s.raw.wan.map(w => Object.fromEntries(Object.entries(w).filter(([k]) => !VOLATILE_WAN.test(k)))));
             if (j !== this.lastWan) {
                 this.lastWan = j;
                 this.write({ type: 'wan', t: isoLocal(s.t), raw: s.raw.wan });

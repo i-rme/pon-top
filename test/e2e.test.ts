@@ -3,6 +3,7 @@ import { startMockRouter } from './mock-router.ts';
 import { RouterClient, RouterError } from '../src/client.ts';
 import { readPon } from '../src/pon.ts';
 import { Tracker } from '../src/monitor.ts';
+import { SessionKeeper, type SessionNote } from '../src/session.ts';
 import type { PonSample } from '../src/pon.ts';
 
 export async function testE2E(): Promise<void> {
@@ -42,6 +43,61 @@ export async function testE2E(): Promise<void> {
     assert.equal(c.loggedIn, false);
     assert.deepEqual(await c.getBusy(), { isLogined: false, isBusy: false }, 'logout debe cerrar la sesión en el router');
     console.log(`e2e OK (${mock.state.requests.length} peticiones al router simulado)`);
+  } finally {
+    mock.server.close();
+  }
+}
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+/** Caducidad de la sesión (HTTP 406 + socket cerrado), renovación automática y casos en que no debe renovar */
+export async function testSessionExpiry(): Promise<void> {
+  const mock = await startMockRouter({ user: 'user', password: 'secreto', sessionTtlMs: 300 });
+  try {
+    const c = new RouterClient({ host: `127.0.0.1:${mock.port}` });
+    let pass = 'secreto';
+    const notes: SessionNote[] = [];
+    let clock = 0;
+    const k = new SessionKeeper(c, () => c.login('user', pass), { auto: true, force: false, onNote: n => notes.push(n), now: () => clock });
+    await c.login('user', 'secreto');
+    assert.equal((await k.run(() => readPon(c))).state, 'O5');
+
+    // 1) caduca: 406 -> se renueva sola y la lectura no se pierde; las siguientes peticiones no fallan por el socket cerrado
+    await sleep(350);
+    for (let i = 0; i < 3; i++) assert.equal((await k.run(() => readPon(c))).state, 'O5');
+    assert.equal(mock.state.expired, 1);
+    assert.equal(mock.state.loginOk, 2);
+    assert.deepEqual(notes.map(n => n.kind), ['renewed']);
+
+    // 2) sin renovación automática, el 406 se notifica como sesión perdida (no como error de lectura)
+    await sleep(350);
+    const manual = new SessionKeeper(c, () => c.login('user', pass), { auto: false, force: false });
+    await assert.rejects(manual.run(() => readPon(c)), (e: RouterError) => e.code === 'SESSION' && /406/.test(e.message));
+
+    // 3) alguien ha entrado en la web: no se le echa, se avisa una vez y se reintenta al minuto
+    mock.state.otherSession = true;
+    await assert.rejects(k.run(() => readPon(c)), /otra sesión abierta/);
+    await assert.rejects(k.run(() => readPon(c)), /nuevo intento en 60 s/);
+    assert.equal(notes.filter(n => n.kind === 'waiting').length, 1);
+    assert.equal(mock.state.loginOk, 2, 'no ha cerrado la otra sesión');
+    clock += 61_000;
+    await assert.rejects(k.run(() => readPon(c)), /otra sesión abierta/);
+    assert.equal(notes.filter(n => n.kind === 'waiting').length, 1, 'no repite el aviso cada minuto');
+    // tecla l: entra igualmente
+    await k.renew(true);
+    assert.equal(mock.state.loginOk, 3);
+    assert.equal((await k.run(() => readPon(c))).state, 'O5');
+
+    // 4) contraseña cambiada: un solo intento y se bloquea (sin martillear el router)
+    pass = 'otra';
+    await sleep(350);
+    await assert.rejects(k.run(() => readPon(c)), /rechazado el inicio de sesión/);
+    await assert.rejects(k.run(() => readPon(c)), /rechazado/);
+    clock += 3_600_000;
+    await assert.rejects(k.run(() => readPon(c)), /rechazado/);
+    assert.equal(mock.state.loginFail, 1, 'un único intento fallido');
+    assert.ok(k.blocked);
+    console.log(`sesión OK (${mock.state.expired} caducidades, ${mock.state.loginOk} logins)`);
   } finally {
     mock.server.close();
   }

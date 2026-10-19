@@ -52,7 +52,9 @@ node dist/main.js --demo          # datos simulados, para ver la interfaz sin ro
 El usuario por defecto es `user`; pulsa Intro para usarlo o escribe otro.
 
 Teclas: `q` salir · `p` pausa · `r` leer ahora · `+`/`-` intervalo · `v` datos en bruto del
-router · `m` silenciar avisos · `l` reconectar.
+router · `m` silenciar avisos · `l` volver a iniciar sesión.
+
+Funciona con Node.js 20+ y con Bun (`bun dist/main.js`).
 
 Además de la potencia y el estado, la pantalla muestra la **disponibilidad** (porcentaje del
 tiempo con la ONU registrada), el tiempo con RX bajo y en qué niveles de RX ha estado la línea.
@@ -118,8 +120,9 @@ descartado el latiguillo y los conectores de casa.
 
 - **La contraseña solo se pide por teclado**, sin eco. No se acepta como argumento (quedaría
   en el historial y en `ps`) ni por variable de entorno, y nunca se escribe en disco.
-- Se mantiene en memoria mientras corre el programa solo para poder reconectar (`l` o
-  `--relogin`) si se pierde la sesión.
+- Se mantiene en memoria mientras corre el programa solo para poder volver a entrar cuando el
+  router cierra la sesión (ver más abajo). Con `--no-relogin` no se reutiliza: si se cierra la
+  sesión hay que pulsar `l` y no se vuelve a entrar solo.
 - Usa el mismo cifrado que la web: la contraseña viaja cifrada con AES y la clave AES va
   firmada con la clave RSA del router. Ojo: el router solo habla HTTP y su RSA es de 512
   bits, así que este canal solo es razonable **dentro de tu red local**. Por eso pon-top se
@@ -127,13 +130,25 @@ descartado el latiguillo y los conectores de casa.
 - **El router admite una sola sesión de administración.** Si hay otra abierta (por ejemplo,
   tu navegador), pon-top avisa y pide confirmación antes de cerrarla (`--force` para no
   preguntar). Al salir hace *logout* para liberar la sesión.
-- Hace un único intento de login por ejecución, para no acercarte al bloqueo por intentos
-  fallidos del router.
+- Si el router rechaza la contraseña al volver a entrar, no lo vuelve a intentar solo, para no
+  acercarte al bloqueo por intentos fallidos.
 - Los registros se crean con permisos `600` (carpeta `700`) y no contienen credenciales.
   `--debug` escribe una traza del protocolo en `pon-top-debug.log` sin contraseñas ni tokens.
 - Las notificaciones se lanzan sin pasar por una shell, y lo que sale hacia un webhook va sin
   direcciones IP.
 - Solo lee datos: no envía ninguna operación que cambie la configuración del router.
+
+### Sesión con el router
+
+El router cierra la sesión de administración a los **10 minutos** y responde `HTTP 406`. pon-top
+lo detecta, vuelve a entrar con las mismas credenciales y repite la lectura, así que no se pierde
+ningún dato (en pantalla aparece como `INFO (n) Sesión renovada`). Además:
+
+- Si mientras tanto has entrado en la web del router, **no te echa**: avisa una vez y lo
+  reintenta cada minuto. Pulsa `l` para entrar igualmente (cerrará la sesión de la web).
+- Si falla por red, reintenta con esperas crecientes (5 s, 15 s, 30 s… hasta 5 min).
+- Cada petición usa una conexión nueva: el router corta el socket cuando cierra la sesión y Bun,
+  por ejemplo, seguía reutilizando la conexión muerta.
 
 ## Cómo funciona
 
