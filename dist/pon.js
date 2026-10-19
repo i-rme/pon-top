@@ -1,3 +1,5 @@
+// Lectura de los mismos datos que muestra Avanzado > Estado (main/status.htm), con las mismas conversiones.
+import { RouterError } from './client.js';
 const num = (v) => {
     if (v === undefined || v === null || v === '')
         return null;
@@ -32,10 +34,16 @@ export function decodeOptics(o) {
     };
 }
 /** Elige la WAN de Internet: la de la ruta por defecto (como hace la web); si no, la PPP; si no, la conectada */
-export function pickWan(list, defaultConn = null) {
-    const enabled = list.filter(w => String(w['enable']) === '1' && w['connType'] !== 'Bridge');
-    const w = (defaultConn ? enabled.find(x => x['name'] === defaultConn) : undefined) ??
-        enabled.find(x => /^PPP/i.test(String(x['connType'] ?? ''))) ??
+/** Conexiones del módem USB 3G/4G: la web las oculta si no están conectadas, y no son la fibra */
+export function isUsbWan(w) {
+    return w['accessMode'] === 'USB' || /^(PPP3G|DHCP4G)$/i.test(String(w['connType'] ?? '')) || /^usb_/i.test(String(w['name'] ?? ''));
+}
+export function pickWan(list, defaultConn = null, lastName = null) {
+    const enabled = list.filter(w => String(w['enable']) === '1' && w['connType'] !== 'Bridge' && (!isUsbWan(w) || w['connStatusV4'] === 'Connected'));
+    const byName = (n) => (n ? enabled.find(x => x['name'] === n) : undefined);
+    const w = byName(defaultConn) ?? // la de la ruta por defecto, como la web
+        byName(lastName) ?? // si no se sabe, la misma que en la lectura anterior
+        enabled.find(x => /^PPPoE$/i.test(String(x['connType'] ?? ''))) ??
         enabled.find(x => x['connStatusV4'] === 'Connected') ??
         enabled[0];
     if (!w)
@@ -50,7 +58,9 @@ export function pickWan(list, defaultConn = null) {
     };
 }
 // La ruta por defecto casi nunca cambia: se consulta como mucho una vez por minuto
+// Solo se guardan las consultas que salen bien: si una falla, se sigue usando el último valor bueno
 const routeCache = new WeakMap();
+const lastWanName = new WeakMap();
 async function defaultRouteConn(client, extra) {
     const c = routeCache.get(client);
     if (c && Date.now() - c.t < 60_000)
@@ -58,8 +68,9 @@ async function defaultRouteConn(client, extra) {
     const routes = await extra(() => client.dm('gl', 'DEV2_ROUTER_V4FWD'));
     const r = Array.isArray(routes) ? routes.find(x => String(x['enable']) === '1' && !x['destIPAddress'] && !x['destSubnetMask']) : undefined;
     const name = r ? String(r['X_TP_ConnName'] ?? '') || null : null;
-    routeCache.set(client, { t: Date.now(), name });
-    return name;
+    if (name)
+        routeCache.set(client, { t: Date.now(), name });
+    return name ?? c?.name ?? null;
 }
 const first = (v) => (Array.isArray(v) ? (v[0] ?? {}) : (v ?? {}));
 export async function readPon(client) {
@@ -67,13 +78,18 @@ export async function readPon(client) {
     const optc = first(await client.dm('gl', 'DEV2_OPTC_GPON_CFG'));
     const stats = first(await client.dm('gl', 'DEV2_GPON_INTF_STATS'));
     const omci = first(await client.dm('gl', 'DEV2_GPON_INTF_OMCI_STATS'));
-    // Extras (si fallan no invalidan la muestra)
-    const extra = async (fn) => { try {
-        return await fn();
-    }
-    catch {
-        return null;
-    } };
+    // Extras: si fallan no invalidan la muestra, salvo que se haya cerrado la sesión a mitad de la
+    // lectura; entonces se repite entera tras renovarla (si no, saldría una muestra incompleta)
+    const extra = async (fn) => {
+        try {
+            return await fn();
+        }
+        catch (e) {
+            if (e instanceof RouterError && e.code === 'SESSION')
+                throw e;
+            return null;
+        }
+    };
     const dev = await extra(() => client.dm('go', 'DEV2_DEV_INFO', { upTime: '' }));
     const cpu = await extra(() => client.dm('go', 'DEV2_PROC_STATUS', { CPUUsage: '' }));
     const mem = await extra(() => client.dm('go', 'DEV2_MEM_STATUS', { total: '', free: '' }));
@@ -81,6 +97,9 @@ export async function readPon(client) {
     const dfltConn = await defaultRouteConn(client, extra);
     const memTotal = num(mem?.['total']);
     const memFree = num(mem?.['free']);
+    const wan = Array.isArray(wans) ? pickWan(wans, dfltConn, lastWanName.get(client) ?? null) : null;
+    if (wan?.name)
+        lastWanName.set(client, wan.name);
     return {
         t: Date.now(),
         ...decodeOptics(optc),
@@ -93,7 +112,7 @@ export async function readPon(client) {
         uptime: num(dev?.['upTime']),
         cpu: num(cpu?.['CPUUsage']),
         mem: memTotal && memFree !== null ? ((memTotal - memFree) / memTotal) * 100 : null,
-        wan: Array.isArray(wans) ? pickWan(wans, dfltConn) : null,
+        wan,
         raw: { optc, stats, omci, wan: Array.isArray(wans) ? wans : null },
     };
 }

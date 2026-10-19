@@ -1,5 +1,5 @@
 // Lectura de los mismos datos que muestra Avanzado > Estado (main/status.htm), con las mismas conversiones.
-import type { RouterClient } from './client.js';
+import { RouterError, type RouterClient } from './client.js';
 
 export interface WanInfo {
   name: string;
@@ -86,11 +86,18 @@ export function decodeOptics(o: Obj) {
 }
 
 /** Elige la WAN de Internet: la de la ruta por defecto (como hace la web); si no, la PPP; si no, la conectada */
-export function pickWan(list: Obj[], defaultConn: string | null = null): WanInfo | null {
-  const enabled = list.filter(w => String(w['enable']) === '1' && w['connType'] !== 'Bridge');
+/** Conexiones del módem USB 3G/4G: la web las oculta si no están conectadas, y no son la fibra */
+export function isUsbWan(w: Obj): boolean {
+  return w['accessMode'] === 'USB' || /^(PPP3G|DHCP4G)$/i.test(String(w['connType'] ?? '')) || /^usb_/i.test(String(w['name'] ?? ''));
+}
+
+export function pickWan(list: Obj[], defaultConn: string | null = null, lastName: string | null = null): WanInfo | null {
+  const enabled = list.filter(w => String(w['enable']) === '1' && w['connType'] !== 'Bridge' && (!isUsbWan(w) || w['connStatusV4'] === 'Connected'));
+  const byName = (n: string | null) => (n ? enabled.find(x => x['name'] === n) : undefined);
   const w =
-    (defaultConn ? enabled.find(x => x['name'] === defaultConn) : undefined) ??
-    enabled.find(x => /^PPP/i.test(String(x['connType'] ?? ''))) ??
+    byName(defaultConn) ?? // la de la ruta por defecto, como la web
+    byName(lastName) ?? // si no se sabe, la misma que en la lectura anterior
+    enabled.find(x => /^PPPoE$/i.test(String(x['connType'] ?? ''))) ??
     enabled.find(x => x['connStatusV4'] === 'Connected') ??
     enabled[0];
   if (!w) return null;
@@ -105,15 +112,17 @@ export function pickWan(list: Obj[], defaultConn: string | null = null): WanInfo
 }
 
 // La ruta por defecto casi nunca cambia: se consulta como mucho una vez por minuto
-const routeCache = new WeakMap<RouterClient, { t: number; name: string | null }>();
+// Solo se guardan las consultas que salen bien: si una falla, se sigue usando el último valor bueno
+const routeCache = new WeakMap<RouterClient, { t: number; name: string }>();
+const lastWanName = new WeakMap<RouterClient, string>();
 async function defaultRouteConn(client: RouterClient, extra: <T>(fn: () => Promise<T>) => Promise<T | null>): Promise<string | null> {
   const c = routeCache.get(client);
   if (c && Date.now() - c.t < 60_000) return c.name;
   const routes = await extra(() => client.dm<Obj[]>('gl', 'DEV2_ROUTER_V4FWD'));
   const r = Array.isArray(routes) ? routes.find(x => String(x['enable']) === '1' && !x['destIPAddress'] && !x['destSubnetMask']) : undefined;
   const name = r ? String(r['X_TP_ConnName'] ?? '') || null : null;
-  routeCache.set(client, { t: Date.now(), name });
-  return name;
+  if (name) routeCache.set(client, { t: Date.now(), name });
+  return name ?? c?.name ?? null;
 }
 
 const first = (v: unknown): Obj => (Array.isArray(v) ? ((v[0] as Obj) ?? {}) : ((v as Obj) ?? {}));
@@ -124,8 +133,14 @@ export async function readPon(client: RouterClient): Promise<PonSample> {
   const stats = first(await client.dm('gl', 'DEV2_GPON_INTF_STATS'));
   const omci = first(await client.dm('gl', 'DEV2_GPON_INTF_OMCI_STATS'));
 
-  // Extras (si fallan no invalidan la muestra)
-  const extra = async <T>(fn: () => Promise<T>): Promise<T | null> => { try { return await fn(); } catch { return null; } };
+  // Extras: si fallan no invalidan la muestra, salvo que se haya cerrado la sesión a mitad de la
+  // lectura; entonces se repite entera tras renovarla (si no, saldría una muestra incompleta)
+  const extra = async <T>(fn: () => Promise<T>): Promise<T | null> => {
+    try { return await fn(); } catch (e) {
+      if (e instanceof RouterError && e.code === 'SESSION') throw e;
+      return null;
+    }
+  };
   const dev = await extra(() => client.dm<Obj>('go', 'DEV2_DEV_INFO', { upTime: '' }));
   const cpu = await extra(() => client.dm<Obj>('go', 'DEV2_PROC_STATUS', { CPUUsage: '' }));
   const mem = await extra(() => client.dm<Obj>('go', 'DEV2_MEM_STATUS', { total: '', free: '' }));
@@ -134,6 +149,8 @@ export async function readPon(client: RouterClient): Promise<PonSample> {
 
   const memTotal = num(mem?.['total']);
   const memFree = num(mem?.['free']);
+  const wan = Array.isArray(wans) ? pickWan(wans, dfltConn, lastWanName.get(client) ?? null) : null;
+  if (wan?.name) lastWanName.set(client, wan.name);
 
   return {
     t: Date.now(),
@@ -147,7 +164,7 @@ export async function readPon(client: RouterClient): Promise<PonSample> {
     uptime: num(dev?.['upTime']),
     cpu: num(cpu?.['CPUUsage']),
     mem: memTotal && memFree !== null ? ((memTotal - memFree) / memTotal) * 100 : null,
-    wan: Array.isArray(wans) ? pickWan(wans, dfltConn) : null,
+    wan,
     raw: { optc, stats, omci, wan: Array.isArray(wans) ? wans : null },
   };
 }

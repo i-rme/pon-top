@@ -140,7 +140,8 @@ Si la RX cambia mientras la fibra está caída, el salto se detecta igualmente a
 caída (también durante el minuto siguiente, mientras la OLT termina de configurar la ONU), no un
 re-registro aparte. La OLT también intercambia unos pocos mensajes OMCI cada 5 minutos y alguna
 ráfaga mayor de vez en cuando; eso es normal y se ve en pantalla junto al contador OMCI. Como conexión WAN se muestra la de la ruta por defecto (la de
-Internet), igual que en la web del router.
+Internet), igual que en la web del router; las del módem USB 3G/4G se ignoran salvo que estén
+conectadas. Si la sesión con el router caduca a mitad de una lectura, la lectura se repite entera.
 
 Desactívalos con `--no-notify` (sin notificaciones del sistema) o `--no-bell` (sin pitido), o
 pulsa `m` para silenciarlos un rato.

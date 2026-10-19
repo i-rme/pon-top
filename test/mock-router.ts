@@ -45,6 +45,9 @@ export async function startMockRouter(opts: MockOptions): Promise<{ port: number
     DEV2_MEM_STATUS: { total: '1000', free: '600' },
     // Como en el router real: primero una WAN estática conectada (VoIP/gestión) y después la PPPoE de Internet
     DEV2_ADT_WAN: [
+      // Igual que el router real: las del módem USB van primero y están siempre desconectadas
+      { enable: '1', name: 'usb_ppp3g', connType: 'PPP3G', accessMode: 'USB', connStatusV4: 'Disconnected', connIPv4Address: '0.0.0.0', X_TP_Uptime: '0' },
+      { enable: '1', name: 'usb_dhcp4g', connType: 'DHCP4G', accessMode: 'USB', connStatusV4: 'Disconnected', connIPv4Address: '0.0.0.0', X_TP_Uptime: '0' },
       { enable: '1', name: 'ipoe_0_2', connType: 'StaticIP', connStatusV4: 'Connected', connIPv4Address: '10.200.0.9', connIPv4Gateway: '10.200.0.1' },
       { enable: '1', name: 'pppoe_0_1', connType: 'PPPoE', connStatusV4: 'Connected', connIPv4Address: '203.0.113.45', connIPv4Gateway: '10.64.0.1' },
     ],

@@ -240,9 +240,13 @@ export class Tracker {
       }
 
       // WAN
-      // (solo cuentan las entradas y salidas de Connected; Disconnected → Connecting es la misma caída)
+      // (solo cuentan las entradas y salidas de Connected; Disconnected → Connecting es la misma caída;
+      // y si cambia la conexión que se está mirando, no se comparan estados de conexiones distintas)
       const pw = prev.wan?.status, cw = s.wan?.status;
-      if (pw && cw && pw !== cw) {
+      const wanChanged =
+        (!!prev.wan?.name && !!s.wan?.name && prev.wan.name !== s.wan.name) ||
+        (!!prev.wan?.type && !!s.wan?.type && prev.wan.type !== s.wan.type); // registros antiguos, sin nombre
+      if (pw && cw && pw !== cw && !wanChanged) {
         if (cw === 'Connected') add('WAN_OK', `WAN conectada (${s.wan?.ip || 'sin IP'})`);
         else if (pw === 'Connected') { this.stats.wanDrops++; add('WAN_CAIDA', `WAN: ${pw} → ${cw}`); }
       }

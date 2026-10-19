@@ -1,6 +1,7 @@
 import { testCrypto } from './crypto.test.ts';
 import { testE2E, testTracker, testSessionExpiry } from './e2e.test.ts';
 import { testAlerts, testRecorderAndReport } from './features.test.ts';
+import { testWan } from './wan.test.ts';
 import { readFileSync } from 'node:fs';
 // La versión del programa debe coincidir con package.json
 const pkgVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -11,5 +12,6 @@ testCrypto();
 testTracker();
 testAlerts();
 testRecorderAndReport();
+await testWan();
 await testE2E();
 await testSessionExpiry();

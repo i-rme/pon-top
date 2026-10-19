@@ -12,7 +12,7 @@ import { Alerter } from './alerts.js';
 import { analyze, loadRecords, renderReport, defaultReportPaths } from './report.js';
 import { SessionKeeper, type SessionNote } from './session.js';
 
-const VERSION = '0.2.3';
+const VERSION = '0.2.4';
 // La release inyecta aquí el número de build y el commit (bun build --define)
 declare const __PON_TOP_BUILD__: string | undefined;
 const BUILD = typeof __PON_TOP_BUILD__ === 'string' ? __PON_TOP_BUILD__ : null;
